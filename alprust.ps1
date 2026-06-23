@@ -13,12 +13,10 @@ param (
     [string[]]$PassthroughFlags
 )
 
-# --- HELPER FUNCTION: BEAUTIFUL CLI HEADERS ---
 function Show-Header ($Message, $Color = "Cyan") {
     Write-Host "`n[alprust] $Message" -ForegroundColor $Color
 }
 
-# 1. Global Help Matrix Menu Block
 if ($Action -eq "help") {
     Write-Host @"
 
@@ -42,27 +40,20 @@ Subcommands:
 Core Tool Modifiers & Flags:
   -port <int>  Map internal container network bridges out to host OS
   -offline     Strict air-gap execution. Disconnects internet bridges
-  -refresh     Clear central dependency layers to force clean fetches
+  -refresh     Safely pull the newest crate versions into the central cache
   -ipv4        Enforce IPv4 stacks (Fixes WSL2 network freezing bugs)
-
-Examples:
-  alprust init
-  alprust check -offline
-  alprust run -port 8080 -refresh --features "local-auth"
 
 =======================================================================
 "@ -ForegroundColor Gray
     Exit
 }
 
-# 2. Handle background self-updates instantly
 if ($Action -eq "update") {
     Show-Header "Updating engine source files from GitHub..." "Cyan"
     git -C $PSScriptRoot pull
     Exit
 }
 
-# 3. Handle project scaffolding (Bypasses Docker & Cargo sweeps)
 if ($Action -eq "init") {
     Write-Host "`n==========================================" -ForegroundColor Cyan
     Write-Host "   alprust Project Scaffolding Engine     " -ForegroundColor Cyan
@@ -74,6 +65,9 @@ if ($Action -eq "init") {
     
     $version = Read-Host "🏷️ Version [Default: 0.1.0]"
     if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.1.0" }
+
+    $edition = Read-Host "🦀 Rust Edition (e.g., 2021, 2024) [Default: 2021]"
+    if ([string]::IsNullOrWhiteSpace($edition)) { $edition = "2021" }
     
     $depsInput = Read-Host "⚙️ Dependencies (comma separated, e.g., tokio@1, serde)"
     
@@ -93,7 +87,7 @@ if ($Action -eq "init") {
 [package]
 name = "$name"
 version = "$version"
-edition = "2021"
+edition = "$edition"
 
 [dependencies]
 $tomlDeps
@@ -103,7 +97,7 @@ $tomlDeps
     if (-not (Test-Path "src")) { New-Item -ItemType Directory -Path "src" | Out-Null }
     $mainRs = @"
 fn main() {
-    println!("Hello from alprust scaffolded project: $name!");
+    println!("Hello from alprust scaffolded project: $name (Edition $edition)!");
 }
 "@
     $mainRs | Out-File "src/main.rs" -Encoding utf8 -Force
@@ -112,14 +106,12 @@ fn main() {
     Exit
 }
 
-# 4. Docker daemon verification sweep
 $dockerCheck = docker info 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Error "[Error] Docker Desktop is not running! Please initialize your daemon first."
     Exit
 }
 
-# 5. Dynamic Cargo.toml context parser
 if (-not (Test-Path "Cargo.toml")) {
     Write-Error "[Error] No Cargo.toml discovered. Ensure your shell paths match a Rust root directory!"
     Exit
@@ -135,7 +127,6 @@ if ($cargoContent -match 'name\s*=\s*"([^"]+)"') {
     Exit
 }
 
-# 6. Auto-Handle Port Allocation Collisions
 if ($Port -gt 0 -and $Action -eq "run") {
     $originalPort = $Port
     while (Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue) {
@@ -146,11 +137,9 @@ if ($Port -gt 0 -and $Action -eq "run") {
     }
 }
 
-# 7. Format passthrough flags
 $cargoFlagsStr = if ($PassthroughFlags) { $PassthroughFlags -join " " } else { "" }
 
-# 8. Core Arguments Construction
-$buildArgs = @("--progress=quiet") # Quiet mode keeps our logging pristine and beautiful
+$buildArgs = @("--progress=quiet") 
 $runArgs = @()
 
 if ($Offline) {
@@ -167,27 +156,24 @@ if ($IPv4) {
 
 $buildArgs += @("--build-arg", "CARGO_FLAGS=$cargoFlagsStr")
 if ($Refresh) {
-    Show-Header "Cache flush requested. Evicting local compilation registry indexes..." "Yellow"
+    Show-Header "Atomic refresh triggered. Scanning upstream for newer package variations..." "Yellow"
     $buildArgs += @("--build-arg", "REFRESH_CACHE=true")
 } else {
     $buildArgs += @("--build-arg", "REFRESH_CACHE=false")
 }
 
-# 9. Dynamic In-Memory Shared Cache Template Layout Construction
 $cacheHeader = @"
 FROM rust:alpine AS base
 ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
 WORKDIR /app
 COPY . .
-# Using central Shared cache IDs to ensure all distinct repositories pool dependency layers globally
 RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
     --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
     --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
-    if [ "`$REFRESH_CACHE" = "true" ]; then rm -rf /usr/local/cargo/registry/cache/* /usr/local/cargo/git/db/*; fi
+    if [ "`$REFRESH_CACHE" = "true" ]; then cargo update; fi
 "@
 
-# 10. Execute Subcommand Blocks
 switch ($Action) {
     "check" {
         Show-Header "Running syntax and type validation sweeps..." "Cyan"
@@ -219,7 +205,16 @@ RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/d
     }
     Default {
         $dockerfileContent = @"
-$cacheHeader
+FROM rust:alpine AS builder
+ARG BIN_NAME
+ARG CARGO_FLAGS
+ARG REFRESH_CACHE=false
+WORKDIR /app
+COPY . .
+RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+    if [ "`$REFRESH_CACHE" = "true" ]; then cargo update; fi
 RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
     --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
     --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
@@ -233,8 +228,6 @@ FROM scratch
 ARG BIN_NAME
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
 "@
-        # Swap standard target layer alias for multi-stage execution routing
-        $dockerfileContent = $dockerfileContent -replace "FROM rust:alpine AS base", "FROM rust:alpine AS builder"
         $buildArgs += @("--build-arg", "BIN_NAME=$binaryName", "-f", "-", "-o", "./output", ".")
         
         Show-Header "Compiling static Alpine production binary asset pipeline..." "Cyan"

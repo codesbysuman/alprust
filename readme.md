@@ -19,11 +19,11 @@ Trying to set up this cross-compilation toolchain **natively or reliably on Wind
 ## Features
 
 * **Zero Codebase Clutter:** Operates entirely in-memory. It pipes build instructions straight to the Docker daemon via `stdin`, leaving your local repository completely clean.
-* **Quick Project Scaffolding:** Includes an automated initializer to instantly spin up standard Rust binary template directories and map dependencies using simple, human-readable console prompts.
+* **Future-Proof Project Scaffolding:** Includes an automated initializer to instantly spin up standard Rust binary template directories. It dynamically prompts for your project name, version metadata, dependency maps, and target **Rust Edition** (fully supporting 2021, 2024, and beyond).
 * **Native Subcommands:** Replaces raw Cargo calls seamlessly with subcommands like `alprust check` and `alprust test` executed inside precise Alpine contexts.
 * **Centralized Global Caching:** Leverages explicit, shared BuildKit layer cache pools across your entire machine. Dependencies downloaded by one project are instantly available to any other project, minimizing internet usage and slashing subsequent build times.
-* **Granular Cache Eviction:** Offers targeted cache control via a explicit modifier flag to safely refresh registry indexing without invalidating your underlying dependency asset store.
-* **Absolute Network Isolation:** Features a strict air-gap option that physically severs the compilation container's network interface, forcing execution entirely from local caches.
+* **Secure, In-Place Cache Eviction:** Offers targeted cache control via an explicit modifier flag. Passing `-refresh` safely updates package dependencies via `cargo update` inside the container without destructively wiping out unrelated cached projects.
+* **Absolute Network Isolation:** Features a strict air-gap option that physically severs the compilation container's network interface (`--network none`), forcing execution entirely from local caches.
 * **Pristine, Distraction-Free Logging:** Mutes noisy Docker BuildKit trace streams behind clean, custom color-coded status banners so you only focus on your true compilation health and application output.
 * **Automatic Port Collision Shifting:** Dynamically scans host network availability before booting web sandboxes. If a requested port is busy, the tool automatically increments upward to the next free slot and prints clickable access hyperlinks.
 * **Bulletproof Interrupt Handling:** Injects an isolated internal init controller into runtime sandboxes to correctly catch and forward system termination hooks, enabling instant `Ctrl + C` clean-ups.
@@ -91,6 +91,7 @@ alprust init
 
 * **Project Name:** `tasks-processor` (Defaults to your current directory name if left blank)
 * **Version:** `1.0.0` (Defaults to `0.1.0` if left blank)
+* **Rust Edition:** `2024` (Defaults to `2021` if left blank)
 * **Dependencies:** `tokio@1.35, serde, axum@0.7.2` (Specifying no `@version` configuration defaults to the latest `*` package wildcard)
 
 ### 2. Verification Checking
@@ -142,7 +143,7 @@ alprust run
 ### 2. Tool Modifiers
 
 * **`-offline`**: Disconnects the container network stack entirely (`--network none`) and forces compilation exclusively from your local global dependency store.
-* **`-refresh`**: Evicts the internal registry package index mappings for the current workspace to safely pull fresh upstream database sheets.
+* **`-refresh`**: Safely coordinates a non-destructive `cargo update` inside the cache workspace to grab newer package versions allowed by your version bounds while guarding older history.
 * **`-ipv4`**: Activates defensive routing parameters. Use this flag if your container compilation hangs or times out on Windows/WSL2 due to missing local host IPv6 packet mappings (e.g., `alprust run -ipv4`).
 
 ### 3. Edge-Case Cargo Flags Passthrough
