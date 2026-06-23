@@ -214,7 +214,7 @@ function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
     
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while (-not $proc.HasExited) {
-        $elapsed = [string]::Format("{0:d2}.{1:d1}s", $sw.Elapsed.Seconds, ($sw.Elapsed.Milliseconds / 100))
+        $elapsed = [string]::Format("{0:d2}s", [int][Math]::Floor($sw.Elapsed.TotalSeconds))
         Write-Host "`r[alprust] Processing compilation asset layers... ($elapsed)" -NoNewline -ForegroundColor Cyan
         Start-Sleep -Milliseconds 100
     }
@@ -320,6 +320,8 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
         }
     }
 }
+
+
 
 
 
