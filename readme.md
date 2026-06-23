@@ -20,9 +20,10 @@ Trying to set up this cross-compilation toolchain **natively or reliably on Wind
 
 * **Zero Codebase Clutter:** Operates entirely in-memory. It pipes build instructions straight to the Docker daemon via `stdin`, leaving your local repository completely clean.
 * **Native Subcommands:** Replaces raw Cargo calls seamlessly with commands like `alprust check` and `alprust test` run inside precise Alpine contexts.
+* **Seamless Local Updates:** Includes a built-in `alprust update` command that updates the utility seamlessly via Git without altering your terminal's current working directory (`cwd`).
 * **Dynamic Configuration:** Automatically parses your `Cargo.toml` at runtime to isolate package markers and direct output binary paths.
 * **Built-in Guardrails:** Automatically executes your project's test suite inside an Alpine container context *before* compiling production releases.
-* **Smart Runtime Sandboxing:** Boots your fresh binary inside an isolated Alpine sandbox with zero port configurations exposed by default—ideal for background processing systems and workers.
+* **Smart Runtime Sandboxing (Zero-Port Default):** Boots your fresh binary inside an isolated Alpine sandbox with zero port configurations exposed by default—ideal for background processing systems and workers.
 * **Strict Offline Mode:** Includes a dedicated `-offline` flag to stop internet verification sweeps and force usage of locally cached images.
 
 ---
@@ -61,19 +62,10 @@ git clone https://github.com/codesbysuman/alprust.git ~/alprust && cd ~/alprust 
 
 ## Updating alprust
 
-Since your system environment paths link directly to the repository folder, updating `alprust` to the latest version requires no installer re-runs. Simply pull down the latest changes from GitHub from anywhere:
-
-### 🛠️ On Windows (PowerShell)
-
-```powershell
-cd ~\alprust; git pull
-
-```
-
-### 🍏 / 🐧 On macOS or Linux
+You can update `alprust` directly from your terminal at any time. The tool targets its own source directory to pull changes from GitHub without altering your terminal's current working directory (`cwd`):
 
 ```bash
-cd ~/alprust && git pull
+alprust update
 
 ```
 
@@ -127,6 +119,7 @@ You can freely append environment tags and override standard behavior across sub
 
 * **`-port <number>`**: Exposes custom network bridges out to your host machine (e.g., `alprust -port 3000`).
 * **`-offline`**: Forces Docker to rely exclusively on local target caches (e.g., `alprust check -offline`).
+* *Note: You can combine flags freely, for example: `alprust run -offline -port 8080*`
 
 ---
 

@@ -1,5 +1,20 @@
 #!/bin/bash
 
+# Route positional subcommand arguments
+action="run"
+if [[ "$1" =~ ^(run|check|test|build|update)$ ]]; then
+    action="$1"
+    shift
+fi
+
+# Route the update subcommand immediately before checking for Cargo context
+if [ "$action" == "update" ]; then
+    echo -e "\033[36mUpdating alprust from GitHub...\033[0m"
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+    git -C "$SCRIPT_DIR" pull
+    exit $?
+fi
+
 if ! docker info >/dev/null 2>&1; then
     echo "Error: Docker daemon is not running!" >&2
     exit 1
@@ -17,13 +32,6 @@ if [ -z "$binaryName" ]; then
 fi
 
 echo -e "\033[33mTarget Binary Detected: $binaryName\033[0m"
-
-# Route positional subcommand arguments
-action="run"
-if [[ "$1" =~ ^(run|check|test|build)$ ]]; then
-    action="$1"
-    shift
-fi
 
 offline=false
 port=0

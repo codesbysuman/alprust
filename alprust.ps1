@@ -1,20 +1,28 @@
 param (
     [Parameter(Position=0)]
-    [ValidateSet("run", "check", "test", "build")]
+    [ValidateSet("run", "check", "test", "build", "update")]
     [string]$Action = "run",
     
     [switch]$Offline,
     [int]$Port = 0
 )
 
-# 1. Quick sanity check for Docker
+# 1. Route the update subcommand immediately before checking for Cargo context
+if ($Action -eq "update") {
+    Write-Host "Updating alprust from GitHub..." -ForegroundColor Cyan
+    # -C runs git inside the script's home directory without shifting the user's terminal cwd
+    git -C $PSScriptRoot pull
+    Exit
+}
+
+# 2. Quick sanity check for Docker
 $dockerCheck = docker info 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Docker Desktop is not running! Please start Docker first."
     Exit
 }
 
-# 2. Extract binary name dynamically from Cargo.toml
+# 3. Extract binary name dynamically from Cargo.toml
 if (-not (Test-Path "Cargo.toml")) {
     Write-Error "No Cargo.toml found here. Make sure you are in your Rust project root!"
     Exit
@@ -29,7 +37,7 @@ if ($cargoContent -match 'name\s*=\s*"([^"]+)"') {
     Exit
 }
 
-# 3. Process Flags
+# 4. Process Flags
 $buildArgs = @()
 $runArgs = @()
 
@@ -39,7 +47,7 @@ if ($Offline) {
     $runArgs += "--pull=never"
 }
 
-# 4. Route Actions Dynamically
+# 5. Route remaining Actions
 switch ($Action) {
     "check" {
         Write-Host "Running 'cargo check' inside Alpine container context..." -ForegroundColor Cyan
@@ -56,7 +64,6 @@ switch ($Action) {
         Exit
     }
     Default {
-        # 'build' or 'run' flows use the multi-stage optimization pipeline
         $dockerfileContent = @"
 FROM rust:alpine AS builder
 ARG BIN_NAME
