@@ -1,13 +1,11 @@
 #!/bin/bash
 
-# Route positional subcommand arguments
 action="run"
 if [[ "$1" =~ ^(run|check|test|build|update)$ ]]; then
     action="$1"
     shift
 fi
 
-# Route the update subcommand immediately before checking for Cargo context
 if [ "$action" == "update" ]; then
     echo -e "\033[36mUpdating alprust from GitHub...\033[0m"
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -34,7 +32,9 @@ fi
 echo -e "\033[33mTarget Binary Detected: $binaryName\033[0m"
 
 offline=false
+ipv4=false
 port=0
+cargoFlags=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -42,11 +42,16 @@ while [[ $# -gt 0 ]]; do
             offline=true
             shift
             ;;
+        -ipv4|--ipv4)
+            ipv4=true
+            shift
+            ;;
         -port|--port)
             port="$2"
             shift 2
             ;;
         *)
+            cargoFlags="$cargoFlags $1"
             shift
             ;;
     esac
@@ -56,35 +61,44 @@ buildArgs=()
 runArgs=()
 
 if [ "$offline" = true ]; then
-    echo -e "\033[35m[Mode] Strict Offline (Using local cache)...\033[0m"
+    echo -e "\033[35m[Mode] Strict Offline (Bypassing registry sweeps)...\033[0m"
     buildArgs+=("--pull=false")
     runArgs+=("--pull=never")
 fi
 
+if [ "$ipv4" = true ]; then
+    echo -e "\033[36m[Network] Enforcing strict IPv4 fallback network stack...\033[0m"
+    buildArgs+=("--network" "host")
+    runArgs+=("--sysctl" "net.ipv6.conf.all.disable_ipv6=1")
+fi
+
+buildArgs+=("--build-arg" "CARGO_FLAGS=$cargoFlags")
+
 if [ "$action" == "check" ]; then
-    echo -e "\033[36mRunning 'cargo check' inside Alpine container context...\033[0m"
+    echo -e "\033[36mRunning 'cargo check' with hot layer registry caches...\033[0m"
     buildArgs+=("--progress=plain" "-f" "-" ".")
-    df="FROM rust:alpine\nWORKDIR /app\nCOPY . .\nRUN cargo check"
+    df="FROM rust:alpine\nWORKDIR /app\nCOPY . .\nARG CARGO_FLAGS\nRUN --mount=type=cache,target=/usr/local/cargo/registry/db --mount=type=cache,target=/usr/local/cargo/registry/cache --mount=type=cache,target=/usr/local/cargo/git/db cargo check \$CARGO_FLAGS"
     echo -e "$df" | docker build "${buildArgs[@]}"
     exit $?
 elif [ "$action" == "test" ]; then
-    echo -e "\033[36mRunning 'cargo test' inside Alpine container context...\033[0m"
+    echo -e "\033[36mRunning 'cargo test' with hot layer registry caches...\033[0m"
     buildArgs+=("--progress=plain" "-f" "-" ".")
-    df="FROM rust:alpine\nWORKDIR /app\nCOPY . .\nRUN cargo test"
+    df="FROM rust:alpine\nWORKDIR /app\nCOPY . .\nARG CARGO_FLAGS\nRUN --mount=type=cache,target=/usr/local/cargo/registry/db --mount=type=cache,target=/usr/local/cargo/registry/cache --mount=type=cache,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS"
     echo -e "$df" | docker build "${buildArgs[@]}"
     exit $?
 else
     buildArgs+=("--build-arg" "BIN_NAME=$binaryName" "-f" "-" "-o" "./output" ".")
-    echo -e "\033[36mCompiling static Alpine binary...\033[0m"
+    echo -e "\033[36mCompiling static Alpine binary with cache mounts active...\033[0m"
     rm -rf ./output
 
     df=$(cat <<EOF
 FROM rust:alpine AS builder
 ARG BIN_NAME
+ARG CARGO_FLAGS
 WORKDIR /app
 COPY . .
-RUN cargo test
-RUN cargo build --release --target x86_64-unknown-linux-musl
+RUN --mount=type=cache,target=/usr/local/cargo/registry/db --mount=type=cache,target=/usr/local/cargo/registry/cache --mount=type=cache,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS
+RUN --mount=type=cache,target=/usr/local/cargo/registry/db --mount=type=cache,target=/usr/local/cargo/registry/cache --mount=type=cache,target=/usr/local/cargo/git/db cargo build --release --target x86_64-unknown-linux-musl \$CARGO_FLAGS
 
 FROM scratch
 ARG BIN_NAME
@@ -109,7 +123,7 @@ EOF
         runArgs+=("-v" "$hostOutputDir:/app" "alpine" "/app/$binaryName")
         docker run "${runArgs[@]}"
     elif [ $? -eq 0 ]; then
-        echo -e "\n\033[32m[Success] Static binary compiled and saved to ./output/$binaryName\033[0m"
+        echo -e "\n\033[32m[Success] Static binary saved cleanly to ./output/$binaryName\033[0m"
     else
         echo "Error: Build execution failed." >&2
         exit 1

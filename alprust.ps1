@@ -4,25 +4,29 @@ param (
     [string]$Action = "run",
     
     [switch]$Offline,
-    [int]$Port = 0
+    [switch]$IPv4,
+    [int]$Port = 0,
+
+    # Dynamic fallback for arbitrary edge-case Cargo options
+    [Parameter(ValueFromRemainingArguments=$true)]
+    [string[]]$PassthroughFlags
 )
 
-# 1. Route the update subcommand immediately before checking for Cargo context
+# 1. Handle background self-updates instantly
 if ($Action -eq "update") {
     Write-Host "Updating alprust from GitHub..." -ForegroundColor Cyan
-    # -C runs git inside the script's home directory without shifting the user's terminal cwd
     git -C $PSScriptRoot pull
     Exit
 }
 
-# 2. Quick sanity check for Docker
+# 2. Docker verification sweep
 $dockerCheck = docker info 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Docker Desktop is not running! Please start Docker first."
     Exit
 }
 
-# 3. Extract binary name dynamically from Cargo.toml
+# 3. Dynamic Cargo.toml context parser
 if (-not (Test-Path "Cargo.toml")) {
     Write-Error "No Cargo.toml found here. Make sure you are in your Rust project root!"
     Exit
@@ -37,28 +41,58 @@ if ($cargoContent -match 'name\s*=\s*"([^"]+)"') {
     Exit
 }
 
-# 4. Process Flags
+# 4. Format passthrough flags
+$cargoFlagsStr = if ($PassthroughFlags) { $PassthroughFlags -join " " } else { "" }
+
+# 5. Core Arguments Construction
 $buildArgs = @()
 $runArgs = @()
 
 if ($Offline) {
-    Write-Host "[Mode] Strict Offline (Using local cache)..." -ForegroundColor Magenta
+    Write-Host "[Mode] Strict Offline (Bypassing registry sweeps)..." -ForegroundColor Magenta
     $buildArgs += "--pull=false"
     $runArgs += "--pull=never"
 }
 
-# 5. Route remaining Actions
+# The Network Guardrail Fix for Alpine/WSL2 IPv6 blackholes
+if ($IPv4) {
+    Write-Host "[Network] Enforcing strict IPv4 fallback network stack..." -ForegroundColor Cyan
+    $buildArgs += @("--network", "host")
+    $runArgs += @("--sysctl", "net.ipv6.conf.all.disable_ipv6=1")
+}
+
+$buildArgs += @("--build-arg", "CARGO_FLAGS=$cargoFlagsStr")
+
+# 6. Execute Subcommand Blocks with BuildKit Cache Mount Integration
 switch ($Action) {
     "check" {
-        Write-Host "Running 'cargo check' inside Alpine container context..." -ForegroundColor Cyan
-        $dockerfileContent = "FROM rust:alpine`nWORKDIR /app`nCOPY . .`nRUN cargo check"
+        Write-Host "Running 'cargo check' with hot layer registry caches..." -ForegroundColor Cyan
+        $dockerfileContent = @"
+FROM rust:alpine
+WORKDIR /app
+COPY . .
+ARG CARGO_FLAGS
+RUN --mount=type=cache,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    cargo check `$CARGO_FLAGS
+"@
         $buildArgs += @("--progress=plain", "-f", "-", ".")
         $dockerfileContent | docker build @buildArgs
         Exit
     }
     "test" {
-        Write-Host "Running 'cargo test' inside Alpine container context..." -ForegroundColor Cyan
-        $dockerfileContent = "FROM rust:alpine`nWORKDIR /app`nCOPY . .`nRUN cargo test"
+        Write-Host "Running 'cargo test' with hot layer registry caches..." -ForegroundColor Cyan
+        $dockerfileContent = @"
+FROM rust:alpine
+WORKDIR /app
+COPY . .
+ARG CARGO_FLAGS
+RUN --mount=type=cache,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    cargo test `$CARGO_FLAGS
+"@
         $buildArgs += @("--progress=plain", "-f", "-", ".")
         $dockerfileContent | docker build @buildArgs
         Exit
@@ -67,17 +101,24 @@ switch ($Action) {
         $dockerfileContent = @"
 FROM rust:alpine AS builder
 ARG BIN_NAME
+ARG CARGO_FLAGS
 WORKDIR /app
 COPY . .
-RUN cargo test
-RUN cargo build --release --target x86_64-unknown-linux-musl
+RUN --mount=type=cache,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    cargo test `$CARGO_FLAGS
+RUN --mount=type=cache,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    cargo build --release --target x86_64-unknown-linux-musl `$CARGO_FLAGS
 
 FROM scratch
 ARG BIN_NAME
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
 "@
         $buildArgs += @("--build-arg", "BIN_NAME=$binaryName", "-f", "-", "-o", "./output", ".")
-        Write-Host "Compiling static Alpine binary..." -ForegroundColor Cyan
+        Write-Host "Compiling static Alpine binary with cache mounts active..." -ForegroundColor Cyan
         if (Test-Path "output") { Remove-Item "output" -Recurse -Force }
         
         $dockerfileContent | docker build @buildArgs
@@ -97,7 +138,7 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
             $runArgs += @("-v", "${hostOutputDir}:/app", "alpine", "/app/$binaryName")
             docker run @runArgs
         } elseif ($LASTEXITCODE -eq 0) {
-            Write-Host "`n[Success] Static binary compiled and saved cleanly to ./output/$binaryName" -ForegroundColor Green
+            Write-Host "`n[Success] Static binary saved cleanly to ./output/$binaryName" -ForegroundColor Green
         } else {
             Write-Error "Build execution failed inside the pipeline container."
         }

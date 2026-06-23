@@ -20,11 +20,11 @@ Trying to set up this cross-compilation toolchain **natively or reliably on Wind
 
 * **Zero Codebase Clutter:** Operates entirely in-memory. It pipes build instructions straight to the Docker daemon via `stdin`, leaving your local repository completely clean.
 * **Native Subcommands:** Replaces raw Cargo calls seamlessly with commands like `alprust check` and `alprust test` run inside precise Alpine contexts.
+* **Persistent Cache Mounting:** Leverages BuildKit layer caching to save and reuse downloaded dependency crates across compilation runs. **Reduces internet data consumption to zero on subsequent checks or builds.**
+* **Edge-Case Ready (Flag Passthrough):** Future-proof design accepts arbitrary Cargo arguments (like `--features`, `--bin`, or `--offline`) seamlessly from the CLI without breaking.
+* **Automatic IPv4 Network Guardrail:** Includes an explicit `-ipv4` switch to patch the notorious Windows/WSL2 IPv6 black-hole routing bug which causes Alpine containers to freeze on network calls.
 * **Seamless Local Updates:** Includes a built-in `alprust update` command that updates the utility seamlessly via Git without altering your terminal's current working directory (`cwd`).
 * **Dynamic Configuration:** Automatically parses your `Cargo.toml` at runtime to isolate package markers and direct output binary paths.
-* **Built-in Guardrails:** Automatically executes your project's test suite inside an Alpine container context *before* compiling production releases.
-* **Smart Runtime Sandboxing (Zero-Port Default):** Boots your fresh binary inside an isolated Alpine sandbox with zero port configurations exposed by default—ideal for background processing systems and workers.
-* **Strict Offline Mode:** Includes a dedicated `-offline` flag to stop internet verification sweeps and force usage of locally cached images.
 
 ---
 
@@ -113,13 +113,34 @@ alprust run
 
 ```
 
-### Advanced Flags Configurations
+---
 
-You can freely append environment tags and override standard behavior across subcommands:
+## Advanced Configurations & Passthroughs
+
+### 1. Port Forwarding
 
 * **`-port <number>`**: Exposes custom network bridges out to your host machine (e.g., `alprust -port 3000`).
-* **`-offline`**: Forces Docker to rely exclusively on local target caches (e.g., `alprust check -offline`).
-* *Note: You can combine flags freely, for example: `alprust run -offline -port 8080*`
+
+### 2. Tool Modifiers
+
+* **`-offline`**: Forces Docker to rely exclusively on local baseline image target caches (e.g., `alprust check -offline`).
+* **`-ipv4`**: Activates defensive routing parameters. Use this flag if your container compilation hangs or times out on Windows/WSL2 due to missing local host IPv6 packet mappings (e.g., `alprust run -ipv4`).
+
+### 3. Edge-Case Cargo Flags Passthrough
+
+Any arbitrary argument not captured by system-specific modifiers will pass straight down into the `cargo` executor inside the container:
+
+```bash
+# Pass specific feature flag profiles
+alprust build --features env_logger
+
+# Target a highly specific binary module in a multi-bin codebase
+alprust check --bin specialized_worker
+
+# Combine tool-specific fallback flags with standard cargo features
+alprust run -ipv4 -port 8080 --features "nitro local-testing"
+
+```
 
 ---
 
