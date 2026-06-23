@@ -7,7 +7,7 @@ if [[ "$1" =~ ^(run|check|test|build|update|init)$ ]]; then
     shift
 fi
 
-# 2. Handle background self-updates instantly (No cwd modification)
+# 2. Handle background self-updates instantly
 if [ "$action" == "update" ]; then
     echo -e "\033[36mUpdating alprust from GitHub...\033[0m"
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -15,7 +15,7 @@ if [ "$action" == "update" ]; then
     exit $?
 fi
 
-# 3. Handle project scaffolding (Bypasses Docker and Cargo checks)
+# 3. Handle project scaffolding
 if [ "$action" == "init" ]; then
     echo -e "\033[36m--- alprust Scaffold Initializer ---\033[0m"
     currentFolder=$(basename "$PWD")
@@ -111,7 +111,18 @@ done
 
 cargoFlagsStr="${passthroughFlags[*]}"
 
-# 7. Core Arguments Construction
+# 7. Auto-Handle Port Allocation Collisions
+if [ "$port" -gt 0 ] && [ "$action" == "run" ]; then
+    originalPort=$port
+    while (echo > /dev/tcp/127.0.0.1/$port) >/dev/null 2>&1; do
+        port=$((port + 1))
+    done
+    if [ "$port" -ne "$originalPort" ]; then
+        echo -e "\033[33m[Warning] Port $originalPort is busy! Auto-shifting to open port: $port\033[0m"
+    fi
+fi
+
+# 8. Core Arguments Construction
 buildArgs=()
 runArgs=()
 
@@ -121,7 +132,6 @@ if [ "$offline" = true ]; then
     runArgs+=("--pull=never")
 fi
 
-# The Network Guardrail Fix for Alpine/WSL2 IPv6 blackholes
 if [ "$ipv4" = true ]; then
     echo -e "\033[36m[Network] Enforcing strict IPv4 fallback network stack...\033[0m"
     buildArgs+=("--network" "host")
@@ -130,7 +140,7 @@ fi
 
 buildArgs+=("--build-arg" "CARGO_FLAGS=$cargoFlagsStr")
 
-# 8. Execute Subcommand Blocks with BuildKit Cache Mount Integration
+# 9. Execute Subcommand Blocks
 if [ "$action" == "check" ]; then
     echo -e "\033[36mRunning 'cargo check' with hot layer registry caches...\033[0m"
     buildArgs+=("--progress=plain" "-f" "-" ".")
@@ -172,11 +182,13 @@ EOF
         echo -e "\033[36mBooting your application inside Alpine environment...\033[0m"
         
         hostOutputDir=$(pwd)/output
-        runArgs+=("--rm" "-it")
+        runArgs+=("--rm" "-it" "--init")
         
         if [ "$port" -gt 0 ]; then
-            echo -e "\033[90m[Network] Exposing inbound port: $port\033[0m"
-            runArgs+=("-p" "$port:$port")
+            echo -e "\n\033[90m[Uniform Network Link Setup Active]\033[0m"
+            echo -e "\033[32m👉 Host Machine Access URL: http://localhost:$port\033[0m"
+            echo -e "\033[33m👉 Internal Container URL:  http://0.0.0.0:$port\033[0m"
+            runArgs+=("-p" "$port:$port" "-e" "PORT=$port")
         fi
         
         runArgs+=("-v" "$hostOutputDir:/app" "alpine" "/app/$binaryName")

@@ -19,7 +19,7 @@ if ($Action -eq "update") {
     Exit
 }
 
-# 2. Handle project scaffolding (Bypasses Docker and Cargo.toml existence checks)
+# 2. Handle project scaffolding
 if ($Action -eq "init") {
     Write-Host "--- alprust Scaffold Initializer ---" -ForegroundColor Cyan
     $currentFolder = (Get-Item .).Name
@@ -32,7 +32,6 @@ if ($Action -eq "init") {
     
     $depsInput = Read-Host "Dependencies (e.g., tokio@1.0, serde, axum@0.7)"
     
-    # Process the human-readable dependency chain string
     $tomlDeps = ""
     if (-not [string]::IsNullOrWhiteSpace($depsInput)) {
         foreach ($dep in ($depsInput -split ',')) {
@@ -45,7 +44,6 @@ if ($Action -eq "init") {
         }
     }
 
-    # Generate cleanly formatted Cargo.toml metadata file
     $cargoToml = @"
 [package]
 name = "$name"
@@ -57,7 +55,6 @@ $tomlDeps
 "@
     $cargoToml | Out-File "Cargo.toml" -Encoding utf8 -Force
 
-    # Generate source workspace directory structure
     if (-not (Test-Path "src")) { New-Item -ItemType Directory -Path "src" | Out-Null }
     $mainRs = @"
 fn main() {
@@ -92,10 +89,21 @@ if ($cargoContent -match 'name\s*=\s*"([^"]+)"') {
     Exit
 }
 
-# 5. Format passthrough flags
+# 5. Auto-Handle Port Allocation Collisions
+if ($Port -gt 0 -and $Action -eq "run") {
+    $originalPort = $Port
+    while (Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue) {
+        $Port++
+    }
+    if ($Port -ne $originalPort) {
+        Write-Host "[Warning] Port $originalPort is busy! Auto-shifting to open port: $Port" -ForegroundColor Yellow
+    }
+}
+
+# 6. Format passthrough flags
 $cargoFlagsStr = if ($PassthroughFlags) { $PassthroughFlags -join " " } else { "" }
 
-# 6. Core Arguments Construction
+# 7. Core Arguments Construction
 $buildArgs = @()
 $runArgs = @()
 
@@ -105,7 +113,6 @@ if ($Offline) {
     $runArgs += "--pull=never"
 }
 
-# The Network Guardrail Fix for Alpine/WSL2 IPv6 blackholes
 if ($IPv4) {
     Write-Host "[Network] Enforcing strict IPv4 fallback network stack..." -ForegroundColor Cyan
     $buildArgs += @("--network", "host")
@@ -114,7 +121,7 @@ if ($IPv4) {
 
 $buildArgs += @("--build-arg", "CARGO_FLAGS=$cargoFlagsStr")
 
-# 7. Execute Subcommand Blocks with BuildKit Cache Mount Integration
+# 8. Execute Subcommand Blocks
 switch ($Action) {
     "check" {
         Write-Host "Running 'cargo check' with hot layer registry caches..." -ForegroundColor Cyan
@@ -179,11 +186,15 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
             Write-Host "Booting your application inside Alpine environment..." -ForegroundColor Cyan
             
             $hostOutputDir = (Get-Item .\output).FullName
-            $runArgs += @("--rm", "-it")
+            
+            # --init perfectly registers and intercepts Ctrl+C termination signals
+            $runArgs += @("--rm", "-it", "--init")
             
             if ($Port -gt 0) {
-                Write-Host "[Network] Exposing inbound port: $Port" -ForegroundColor Gray
-                $runArgs += @("-p", "${Port}:${Port}")
+                Write-Host "`n[Uniform Network Link Setup Active]" -ForegroundColor Gray
+                Write-Host "👉 Host Machine Access URL: http://localhost:$Port" -ForegroundColor Green
+                Write-Host "👉 Internal Container URL:  http://0.0.0.0:$Port" -ForegroundColor Yellow
+                $runArgs += @("-p", "${Port}:${Port}", "-e", "PORT=$Port")
             }
             
             $runArgs += @("-v", "${hostOutputDir}:/app", "alpine", "/app/$binaryName")
