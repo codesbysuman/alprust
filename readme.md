@@ -12,13 +12,14 @@ When deploying Rust applications to a minimalist Alpine Linux environment, you m
 
 Trying to set up this cross-compilation toolchain **natively or reliably on Windows or macOS is notoriously frustrating**, often requiring heavy dependencies, complex linker configurations, or broken environment variables. While Docker solves this runtime isolation issue, manually writing, managing, and maintaining custom multi-stage `Dockerfiles` for every single microservice introduces unnecessary friction and clutters your codebase.
 
-**`alprust` completely removes this hassle.** It handles the entire compilation, checking, testing, and runtime emulation pipeline directly in-memory via streamed Docker processing.
+**`alprust` completely removes this hassle.** It handles the entire compilation, checking, testing, scaffolding, and runtime emulation pipeline directly in-memory via streamed Docker processing.
 
 ---
 
 ## Features
 
 * **Zero Codebase Clutter:** Operates entirely in-memory. It pipes build instructions straight to the Docker daemon via `stdin`, leaving your local repository completely clean.
+* **Quick Project Scaffolding:** Includes an automated initializer to instantly spin up standard Rust binary template directories and map dependencies using simple, human-readable console prompts.
 * **Native Subcommands:** Replaces raw Cargo calls seamlessly with commands like `alprust check` and `alprust test` run inside precise Alpine contexts.
 * **Persistent Cache Mounting:** Leverages BuildKit layer caching to save and reuse downloaded dependency crates across compilation runs. **Reduces internet data consumption to zero on subsequent checks or builds.**
 * **Edge-Case Ready (Flag Passthrough):** Future-proof design accepts arbitrary Cargo arguments (like `--features`, `--bin`, or `--offline`) seamlessly from the CLI without breaking.
@@ -73,36 +74,51 @@ alprust update
 
 ## Usage & Subcommands
 
-Simply navigate to the root directory of **any** Rust project (the folder containing your `Cargo.toml`) and call your desired action:
+Simply navigate to your desired workspace or the root directory of an existing Rust project and call your action:
 
-### 1. Verification Checking
+### 1. Quick Project Scaffolding
 
-Validates compilation integrity and tracks architectural warnings inside the Alpine Linux environment without triggering a full build:
+Creates a clean, standard Rust binary structure inside an empty directory. It prompts for configuration strings using normal human text:
+
+```bash
+alprust init
+
+```
+
+*Prompt Input Reference:*
+
+* **Project Name:** `tasks-processor` (Defaults to your current directory name if left blank)
+* **Version:** `1.0.0` (Defaults to `0.1.0` if left blank)
+* **Dependencies:** `tokio@1.35, serde, axum@0.7.2` (Specifying no `@version` configuration defaults to the latest `*` package wildcard)
+
+### 2. Verification Checking
+
+Validates compilation integrity and tracks architectural warnings inside the Alpine Linux environment without triggering a full production build:
 
 ```bash
 alprust check
 
 ```
 
-### 2. Isolated Test Executions
+### 3. Isolated Test Executions
 
-Isolates and fires the full project test suite inside an active Alpine context:
+Isolates and fires your project's full test suite inside an active Alpine context with layer caching active:
 
 ```bash
 alprust test
 
 ```
 
-### 3. Production Compilation Only
+### 4. Production Compilation Only
 
-Compiles and extracts the bare-metal binary straight into your local `./output/` folder without launching a live verification container:
+Compiles and extracts the bare-metal static binary straight into your local `./output/` folder without launching a live verification container sandbox:
 
 ```bash
 alprust build
 
 ```
 
-### 4. Continuous Dev Loop (Default Action)
+### 5. Continuous Dev Loop (Default Action)
 
 Runs test workflows, outputs the static binary, and **immediately boots it live** inside an Alpine runtime container instance:
 

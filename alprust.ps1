@@ -1,6 +1,6 @@
 param (
     [Parameter(Position=0)]
-    [ValidateSet("run", "check", "test", "build", "update")]
+    [ValidateSet("run", "check", "test", "build", "update", "init")]
     [string]$Action = "run",
     
     [switch]$Offline,
@@ -19,14 +19,65 @@ if ($Action -eq "update") {
     Exit
 }
 
-# 2. Docker verification sweep
+# 2. Handle project scaffolding (Bypasses Docker and Cargo.toml existence checks)
+if ($Action -eq "init") {
+    Write-Host "--- alprust Scaffold Initializer ---" -ForegroundColor Cyan
+    $currentFolder = (Get-Item .).Name
+    
+    $name = Read-Host "Project Name [Default: $currentFolder]"
+    if ([string]::IsNullOrWhiteSpace($name)) { $name = $currentFolder }
+    
+    $version = Read-Host "Version [Default: 0.1.0]"
+    if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.1.0" }
+    
+    $depsInput = Read-Host "Dependencies (e.g., tokio@1.0, serde, axum@0.7)"
+    
+    # Process the human-readable dependency chain string
+    $tomlDeps = ""
+    if (-not [string]::IsNullOrWhiteSpace($depsInput)) {
+        foreach ($dep in ($depsInput -split ',')) {
+            $dep = $dep.Trim()
+            if ($dep -match '^([^@]+)@(.+)$') {
+                $tomlDeps += "    $($Matches[1]) = `"$($Matches[2])`"`n"
+            } elseif ($dep -ne "") {
+                $tomlDeps += "    $dep = `"*`"`n"
+            }
+        }
+    }
+
+    # Generate cleanly formatted Cargo.toml metadata file
+    $cargoToml = @"
+[package]
+name = "$name"
+version = "$version"
+edition = "2021"
+
+[dependencies]
+$tomlDeps
+"@
+    $cargoToml | Out-File "Cargo.toml" -Encoding utf8 -Force
+
+    # Generate source workspace directory structure
+    if (-not (Test-Path "src")) { New-Item -ItemType Directory -Path "src" | Out-Null }
+    $mainRs = @"
+fn main() {
+    println!("Hello from alprust scaffolded project: $name!");
+}
+"@
+    $mainRs | Out-File "src/main.rs" -Encoding utf8 -Force
+
+    Write-Host "`n[Success] Rust project '$name' scaffolded cleanly!" -ForegroundColor Green
+    Exit
+}
+
+# 3. Docker verification sweep
 $dockerCheck = docker info 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Docker Desktop is not running! Please start Docker first."
     Exit
 }
 
-# 3. Dynamic Cargo.toml context parser
+# 4. Dynamic Cargo.toml context parser
 if (-not (Test-Path "Cargo.toml")) {
     Write-Error "No Cargo.toml found here. Make sure you are in your Rust project root!"
     Exit
@@ -41,10 +92,10 @@ if ($cargoContent -match 'name\s*=\s*"([^"]+)"') {
     Exit
 }
 
-# 4. Format passthrough flags
+# 5. Format passthrough flags
 $cargoFlagsStr = if ($PassthroughFlags) { $PassthroughFlags -join " " } else { "" }
 
-# 5. Core Arguments Construction
+# 6. Core Arguments Construction
 $buildArgs = @()
 $runArgs = @()
 
@@ -63,7 +114,7 @@ if ($IPv4) {
 
 $buildArgs += @("--build-arg", "CARGO_FLAGS=$cargoFlagsStr")
 
-# 6. Execute Subcommand Blocks with BuildKit Cache Mount Integration
+# 7. Execute Subcommand Blocks with BuildKit Cache Mount Integration
 switch ($Action) {
     "check" {
         Write-Host "Running 'cargo check' with hot layer registry caches..." -ForegroundColor Cyan
