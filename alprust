@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# --- HELPER ROUTINE: VIBRANT COLOR STRINGS ---
 show_header() {
     local msg="$1"
     local color="$2"
@@ -12,14 +11,12 @@ show_header() {
     esac
 }
 
-# 1. Route positional subcommand arguments
 action="run"
 if [[ "$1" =~ ^(run|check|test|build|update|init|help)$ ]]; then
     action="$1"
     shift
 fi
 
-# 2. Unified Global Help Menu Matrix Display
 if [ "$action" == "help" ]; then
     cat << 'EOF'
 
@@ -43,20 +40,14 @@ Subcommands:
 Core Tool Modifiers & Flags:
   -port <int>  Map internal container network bridges out to host OS
   -offline     Strict air-gap execution. Disconnects internet bridges
-  -refresh     Clear central dependency layers to force clean fetches
+  -refresh     Safely pull the newest crate versions into the central cache
   -ipv4        Enforce IPv4 stacks (Fixes WSL2 network freezing bugs)
-
-Examples:
-  alprust init
-  alprust check -offline
-  alprust run -port 8080 -refresh --features "local-auth"
 
 =======================================================================
 EOF
     exit 0
 fi
 
-# 3. Handle background self-updates instantly (No cwd footprint shifts)
 if [ "$action" == "update" ]; then
     show_header "Updating engine source files from GitHub..." "cyan"
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
@@ -64,7 +55,6 @@ if [ "$action" == "update" ]; then
     exit $?
 fi
 
-# 4. Handle project scaffolding (Bypasses compilation sweeps)
 if [ "$action" == "init" ]; then
     echo -e "\033[36m\n=========================================="
     echo -e "   alprust Project Scaffolding Engine     "
@@ -76,6 +66,9 @@ if [ "$action" == "init" ]; then
     
     read -p "🏷️ Version [Default: 0.1.0]: " version
     [ -z "$version" ] && version="0.1.0"
+
+    read -p "🦀 Rust Edition (e.g., 2021, 2024) [Default: 2021]: " edition
+    [ -z "$edition" ] && edition="2021"
     
     read -p "⚙️ Dependencies (comma separated, e.g., tokio@1, serde): " depsInput
     
@@ -96,7 +89,7 @@ if [ "$action" == "init" ]; then
 [package]
 name = "$name"
 version = "$version"
-edition = "2021"
+edition = "$edition"
 
 [dependencies]
 $(echo -e "$tomlDeps")
@@ -105,7 +98,7 @@ EOF
     mkdir -p src
     cat <<EOF > src/main.rs
 fn main() {
-    println!("Hello from alprust scaffolded project: $name!");
+    println!("Hello from alprust scaffolded project: $name (Edition $edition)!");
 }
 EOF
 
@@ -113,13 +106,11 @@ EOF
     exit 0
 fi
 
-# 5. Docker daemon validation sweep
 if ! docker info >/dev/null 2>&1; then
     echo -e "\033[31m[Error] Docker daemon is not running! Initialize your engine first.\033[0m" >&2
     exit 1
 fi
 
-# 6. Dynamic Cargo.toml context parser
 if [ ! -f "Cargo.toml" ]; then
     echo -e "\033[31m[Error] No Cargo.toml discovered. Ensure your execution path matches a Rust root directory!\033[0m" >&2
     exit 1
@@ -133,7 +124,6 @@ fi
 
 echo -e "\033[90mTarget Workspace Detected: \033[0m\033[33m$binaryName\033[0m"
 
-# 7. Parse Named Flags vs Dynamic Passthrough Arguments
 offline=false
 ipv4=false
 refresh=false
@@ -152,7 +142,6 @@ done
 
 cargoFlagsStr="${passthroughFlags[*]}"
 
-# 8. Auto-Handle Port Allocation Collisions
 if [ "$port" -gt 0 ] && [ "$action" == "run" ]; then
     originalPort=$port
     while (echo > /dev/tcp/127.0.0.1/$port) >/dev/null 2>&1; do
@@ -163,8 +152,7 @@ if [ "$port" -gt 0 ] && [ "$action" == "run" ]; then
     fi
 fi
 
-# 9. Core Arguments Construction
-buildArgs=("--progress=quiet") # Quiet mode keeps our logging pristine and beautiful
+buildArgs=("--progress=quiet") 
 runArgs=()
 
 if [ "$offline" = true ]; then
@@ -181,16 +169,14 @@ fi
 
 buildArgs+=("--build-arg" "CARGO_FLAGS=$cargoFlagsStr")
 if [ "$refresh" = true ]; then
-    show_header "Cache flush requested. Evicting local compilation registry indexes..." "yellow"
+    show_header "Atomic refresh triggered. Scanning upstream for newer package variations..." "yellow"
     buildArgs+=("--build-arg" "REFRESH_CACHE=true")
 else
     buildArgs+=("--build-arg" "REFRESH_CACHE=false")
 fi
 
-# 10. Dynamic In-Memory Shared Cache Template Layout Construction
-cacheHeader="FROM rust:alpine AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nWORKDIR /app\nCOPY . .\nRUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ \"\$REFRESH_CACHE\" = \"true\" ]; then rm -rf /usr/local/cargo/registry/cache/* /usr/local/cargo/git/db/*; fi"
+cacheHeader="FROM rust:alpine AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nWORKDIR /app\nCOPY . .\nRUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ \"\$REFRESH_CACHE\" = \"true\" ]; then cargo update; fi"
 
-# 11. Execute Subcommand Blocks
 if [ "$action" == "check" ]; then
     show_header "Running syntax and type validation sweeps..." "cyan"
     buildArgs+=("-f" "-" ".")
@@ -219,7 +205,7 @@ ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
 WORKDIR /app
 COPY . .
-RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ "\$REFRESH_CACHE" = "true" ]; then rm -rf /usr/local/cargo/registry/cache/* /usr/local/cargo/git/db/*; fi
+RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ "\$REFRESH_CACHE" = "true" ]; then cargo update; fi
 RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS
 RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo build --release --target x86_64-unknown-linux-musl \$CARGO_FLAGS
 
