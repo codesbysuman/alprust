@@ -12,24 +12,24 @@ When deploying Rust applications to a minimalist Alpine Linux environment, you m
 
 Trying to set up this cross-compilation toolchain **natively or reliably on Windows or macOS is notoriously frustrating**, often requiring heavy dependencies, complex linker configurations, or broken environment variables. While Docker solves this runtime isolation issue, manually writing, managing, and maintaining custom multi-stage `Dockerfiles` for every single microservice introduces unnecessary friction and clutters your codebase.
 
-**`alprust` completely removes this hassle.** It handles the entire compilation, testing, and runtime emulation pipeline directly in-memory via streamed Docker processing.
+**`alprust` completely removes this hassle.** It handles the entire compilation, checking, testing, and runtime emulation pipeline directly in-memory via streamed Docker processing.
 
 ---
 
 ## Features
 
-* **Zero Codebase Clutter:** Operates entirely in-memory. It pipes the build instructions straight to the Docker daemon via `stdin`, leaving your local repository clean (no temporary files created).
-* **Dynamic Configuration:** Automatically reads your `Cargo.toml` at runtime to detect your package name and manage target outputs.
-* **Built-in Guardrails:** Automatically executes your project's test suite inside an Alpine container context *before* compiling the production release. If your tests fail, it safely halts the build.
-* **Smart Runtime Sandboxing (Zero-Port Default):** Boots your binary without opening local network ports by default. This makes it perfect for background task workers or queue engines and prevents local port collisions.
-* **Dynamic Port Forwarding:** Easily expose custom ports using the `-port` flag when building web applications.
-* **Strict Offline Mode:** Includes a dedicated `-offline` flag to drop internet pings entirely and force usage of locally cached images.
+* **Zero Codebase Clutter:** Operates entirely in-memory. It pipes build instructions straight to the Docker daemon via `stdin`, leaving your local repository completely clean.
+* **Native Subcommands:** Replaces raw Cargo calls seamlessly with commands like `alprust check` and `alprust test` run inside precise Alpine contexts.
+* **Dynamic Configuration:** Automatically parses your `Cargo.toml` at runtime to isolate package markers and direct output binary paths.
+* **Built-in Guardrails:** Automatically executes your project's test suite inside an Alpine container context *before* compiling production releases.
+* **Smart Runtime Sandboxing:** Boots your fresh binary inside an isolated Alpine sandbox with zero port configurations exposed by default—ideal for background processing systems and workers.
+* **Strict Offline Mode:** Includes a dedicated `-offline` flag to stop internet verification sweeps and force usage of locally cached images.
 
 ---
 
 ## Prerequisites
 
-Before installing, ensure you have **Docker Desktop** installed, running, and accessible via your terminal on your machine.
+Before installing, ensure you have **Docker Desktop** installed, running, and accessible via your system terminal.
 
 ---
 
@@ -79,44 +79,60 @@ cd ~/alprust && git pull
 
 ---
 
-## Usage
+## Usage & Subcommands
 
-Simply navigate to the root directory of **any** Rust project (the folder containing your `Cargo.toml`) and run your preferred execution mode:
+Simply navigate to the root directory of **any** Rust project (the folder containing your `Cargo.toml`) and call your desired action:
 
-### 1. Worker / Engine Mode (Default)
+### 1. Verification Checking
 
-Compiles your project and launches it as a background process with no open network ports (ideal for queue workers or tasks engines):
+Validates compilation integrity and tracks architectural warnings inside the Alpine Linux environment without triggering a full build:
+
+```bash
+alprust check
+
+```
+
+### 2. Isolated Test Executions
+
+Isolates and fires the full project test suite inside an active Alpine context:
+
+```bash
+alprust test
+
+```
+
+### 3. Production Compilation Only
+
+Compiles and extracts the bare-metal binary straight into your local `./output/` folder without launching a live verification container:
+
+```bash
+alprust build
+
+```
+
+### 4. Continuous Dev Loop (Default Action)
+
+Runs test workflows, outputs the static binary, and **immediately boots it live** inside an Alpine runtime container instance:
 
 ```bash
 alprust
+# Or explicitly:
+alprust run
 
 ```
 
-### 2. Web Server Mode (Custom Port Binding)
+### Advanced Flags Configurations
 
-If your app is an API or microservice requiring network communication, pass a custom `-port` argument to map that port directly out to your host machine:
+You can freely append environment tags and override standard behavior across subcommands:
 
-```bash
-alprust -port 3000
-
-```
-
-### 3. Strict Offline Mode
-
-Performs the build strictly from your local image storage layout, eliminating network dependency overhead entirely:
-
-```bash
-alprust -offline
-
-```
-
-*Note: You can combine flags freely, for example: `alprust -offline -port 8080*`
+* **`-port <number>`**: Exposes custom network bridges out to your host machine (e.g., `alprust -port 3000`).
+* **`-offline`**: Forces Docker to rely exclusively on local target caches (e.g., `alprust check -offline`).
 
 ---
 
 ## 💡 Testing Network Endpoints Locally
 
-If you are using **Web Server Mode** and want to interact with your server or test a `/health` endpoint while `alprust` is running the sandbox container, ensure your Rust code binds to network address `0.0.0.0` instead of `127.0.0.1`:
+If you are exposing custom port parameters to interact with an API or test a `/health` endpoint while `alprust` runs your container sandbox, ensure your Rust code binds to network address `0.0.0.0` instead of `127.0.0.1`:
 
 ```rust
 // In your main.rs setup (Axum, Actix, Tokio, etc.)
