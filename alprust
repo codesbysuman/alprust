@@ -1,12 +1,10 @@
 #!/bin/bash
 
-# 1. Quick sanity check for Docker
 if ! docker info >/dev/null 2>&1; then
     echo "Error: Docker daemon is not running!" >&2
     exit 1
 fi
 
-# 2. Extract binary name dynamically
 if [ ! -f "Cargo.toml" ]; then
     echo "Error: No Cargo.toml found here." >&2
     exit 1
@@ -20,12 +18,24 @@ fi
 
 echo -e "\033[33mTarget Binary Detected: $binaryName\033[0m"
 
-# 3. Parse flags
 offline=false
-for arg in "$@"; do
-    if [ "$arg" == "-offline" ] || [ "$arg" == "--offline" ]; then
-        offline=true
-    fi
+port=0
+
+# Better argument parsing loop
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -offline|--offline)
+            offline=true
+            shift
+            ;;
+        -port|--port)
+            port="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
 done
 
 buildArgs=()
@@ -42,7 +52,6 @@ buildArgs+=("--build-arg" "BIN_NAME=$binaryName" "-f" "-" "-o" "./output" ".")
 echo -e "\033[36mCompiling and extracting static Alpine binary...\033[0m"
 rm -rf ./output
 
-# 4. In-Memory Dockerfile pipeline via Bash EOF stream
 dockerfileContent=$(cat <<EOF
 FROM rust:alpine AS builder
 ARG BIN_NAME
@@ -57,17 +66,21 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/\$BIN_NAME /
 EOF
 )
 
-# Feed build array natively via stdin
 echo "$dockerfileContent" | docker build "${buildArgs[@]}"
 
-# 5. Boot Runtime Layer
 if [ $? -eq 0 ]; then
     echo -e "\n\033[32m[Success] Static binary compiled perfectly!\033[0m"
     echo -e "\033[36mBooting your application inside Alpine environment...\033[0m"
     
     hostOutputDir=$(pwd)/output
-    runArgs+=("--rm" "-it" "-p" "8080:8080" "-v" "$hostOutputDir:/app" "alpine" "/app/$binaryName")
+    runArgs+=("--rm" "-it")
     
+    if [ "$port" -gt 0 ]; then
+        echo -e "\033[90m[Network] Exposing inbound port: $port\033[0m"
+        runArgs+=("-p" "$port:$port")
+    fi
+    
+    runArgs+=("-v" "$hostOutputDir:/app" "alpine" "/app/$binaryName")
     docker run "${runArgs[@]}"
 else
     echo "Error: Build execution failed inside the pipeline container." >&2
