@@ -80,7 +80,9 @@ if [ "$action" == "init" ]; then
         for dep in "${ADDR[@]}"; do
             dep=$(echo "$dep" | xargs)
             if [[ "$dep" =~ ^([^@]+)@(.+)$ ]]; then
-                tomlDeps+="    ${BASH_REMATCH[1]} = \"${BASH_REMATCH[2]}\"\n"
+                depName=$(echo "${BASH_REMATCH[1]}" | xargs)
+                depVer=$(echo "${BASH_REMATCH[2]}" | xargs)
+                tomlDeps+="    $depName = \"$depVer\"\n"
             elif [ ! -z "$dep" ]; then
                 tomlDeps+="    $dep = \"*\"\n"
             fi
@@ -118,7 +120,7 @@ if [ ! -f "Cargo.toml" ]; then
     exit 1
 fi
 
-binaryName=$(grep -m 1 '^name[[:space:]]*=[[:space:]]*' Cargo.toml | sed 's/.*=[[:space:]]*"\(.*\)".*/\1/')
+binaryName=$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -m 1 '^[[:space:]]*name[[:space:]]*=' | sed -E "s/^[[:space:]]*name[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/")
 if [ -z "$binaryName" ]; then
     echo -e "\033[31m[Error] Unable to isolate package structural definitions inside Cargo.toml.\033[0m" >&2
     exit 1
@@ -139,7 +141,15 @@ while [[ $# -gt 0 ]]; do
         -ipv4|--ipv4)       ipv4=true; shift ;;
         -refresh|--refresh) refresh=true; shift ;;
         -verbose|--verbose) verbose=true; shift ;;
-        -port|--port)       port="$2"; shift 2 ;;
+        -port|--port)       
+            if [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -ge 0 ] && [ "$2" -le 65535 ]; then
+                port="$2"
+                shift 2
+            else
+                echo -e "\033[31m[Error] -port requires a valid port number (0-65535) as an argument.\033[0m" >&2
+                exit 1
+            fi
+            ;;
         *)                  passthroughFlags+=("$1"); shift ;;
     esac
 done

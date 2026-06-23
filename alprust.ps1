@@ -1,4 +1,4 @@
-param (
+﻿param (
     [Parameter(Position=0)]
     [ValidateSet("run", "check", "test", "build", "update", "init", "help")]
     [string]$Action = "run",
@@ -6,13 +6,26 @@ param (
     [switch]$Offline,
     [switch]$IPv4,
     [switch]$Refresh,
-    [switch]$Verbose,
+    
+    [ValidateRange(0, 65535)]
     [int]$Port = 0,
 
     # Dynamic fallback for arbitrary edge-case Cargo options
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$PassthroughFlags
 )
+
+$Verbose = $PSBoundParameters.ContainsKey('Verbose')
+
+# Unicode emoji definitions using character codes for system encoding/locale immunity
+$EmojiRocket   = [char]::ConvertFromUtf32(0x1F680)
+$EmojiBox      = [char]::ConvertFromUtf32(0x1F4E6)
+$EmojiTag      = [char]::ConvertFromUtf32(0x1F3F7)
+$EmojiCrab     = [char]::ConvertFromUtf32(0x1F980)
+$EmojiGear     = [char]::ConvertFromUtf32(0x2699)
+$EmojiSparkles = [char]::ConvertFromUtf32(0x2728)
+$EmojiFire     = [char]::ConvertFromUtf32(0x1F525)
+$EmojiFinger   = [char]::ConvertFromUtf32(0x1F449)
 
 function Show-Header ($Message, $Color = "Cyan") {
     Write-Host "`n[alprust] $Message" -ForegroundColor $Color
@@ -22,7 +35,7 @@ if ($Action -eq "help") {
     Write-Host @"
 
 =======================================================================
-   alprust CLI 🚀 - Ultra-lean Alpine Linux Compilation Suite
+   alprust CLI $EmojiRocket - Ultra-lean Alpine Linux Compilation Suite
 =======================================================================
 Created and maintained by codesbysuman.
 
@@ -62,23 +75,23 @@ if ($Action -eq "init") {
     Write-Host "==========================================" -ForegroundColor Cyan
     $currentFolder = (Get-Item .).Name
     
-    $name = Read-Host "📦 Project Name [Default: $currentFolder]"
+    $name = Read-Host "$EmojiBox Project Name [Default: $currentFolder]"
     if ([string]::IsNullOrWhiteSpace($name)) { $name = $currentFolder }
     
-    $version = Read-Host "🏷️ Version [Default: 0.1.0]"
+    $version = Read-Host "$EmojiTag Version [Default: 0.1.0]"
     if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.1.0" }
 
-    $edition = Read-Host "🦀 Rust Edition (e.g., 2021, 2024) [Default: 2021]"
+    $edition = Read-Host "$EmojiCrab Rust Edition (e.g., 2021, 2024) [Default: 2021]"
     if ([string]::IsNullOrWhiteSpace($edition)) { $edition = "2021" }
     
-    $depsInput = Read-Host "⚙️ Dependencies (comma separated, e.g., tokio@1, serde)"
+    $depsInput = Read-Host "$EmojiGear Dependencies (comma separated, e.g., tokio@1, serde)"
     
     $tomlDeps = ""
     if (-not [string]::IsNullOrWhiteSpace($depsInput)) {
         foreach ($dep in ($depsInput -split ',')) {
             $dep = $dep.Trim()
             if ($dep -match '^([^@]+)@(.+)$') {
-                $tomlDeps += "    $($Matches[1]) = `"$($Matches[2])`"`n"
+                $tomlDeps += "    $($Matches[1].Trim()) = `"$($Matches[2].Trim())`"`n"
             } elseif ($dep -ne "") {
                 $tomlDeps += "    $dep = `"*`"`n"
             }
@@ -104,29 +117,29 @@ fn main() {
 "@
     $mainRs | Out-File "src/main.rs" -Encoding utf8 -Force
 
-    Write-Host "`n✨ Success! Rust project '$name' scaffolded cleanly!" -ForegroundColor Green
-    Exit
+    Write-Host "`n$EmojiSparkles Success! Rust project '$name' scaffolded cleanly!" -ForegroundColor Green
+    Exit 0
 }
 
 $dockerCheck = docker info 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "[Error] Docker Desktop is not running! Please initialize your daemon first."
-    Exit
+    Write-Host "[Error] Docker Desktop is not running! Please initialize your daemon first." -ForegroundColor Red
+    Exit 1
 }
 
 if (-not (Test-Path "Cargo.toml")) {
-    Write-Error "[Error] No Cargo.toml discovered. Ensure your shell paths match a Rust root directory!"
-    Exit
+    Write-Host "[Error] No Cargo.toml discovered. Ensure your shell paths match a Rust root directory!" -ForegroundColor Red
+    Exit 1
 }
 
 $cargoContent = Get-Content "Cargo.toml" -Raw
-if ($cargoContent -match 'name\s*=\s*"([^"]+)"') {
+if ($cargoContent -match '(?ms)^\[package\].*?^name\s*=\s*["'']([^"'']+)["'']') {
     $binaryName = $Matches[1]
     Write-Host "`nTarget Workspace Detected: " -NoNewline -ForegroundColor Gray
     Write-Host $binaryName -ForegroundColor Yellow
 } else {
-    Write-Error "[Error] Unable to isolate package structural definitions inside Cargo.toml."
-    Exit
+    Write-Host "[Error] Unable to isolate package structural definitions inside Cargo.toml." -ForegroundColor Red
+    Exit 1
 }
 
 if ($Port -gt 0 -and $Action -eq "run") {
@@ -214,7 +227,7 @@ function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
     
     if ($proc.ExitCode -ne 0) {
         Write-Host "`n=======================================================" -ForegroundColor Red
-        Write-Host " 🔥 BUILD FAILURE DETECTED INSIDE THE CONTAINER" -ForegroundColor Red
+        Write-Host " $EmojiFire BUILD FAILURE DETECTED INSIDE THE CONTAINER" -ForegroundColor Red
         Write-Host "=======================================================" -ForegroundColor Red
         if (-not [string]::IsNullOrWhiteSpace($stdErr)) { Write-Host $stdErr -ForegroundColor DarkRed }
         if (-not [string]::IsNullOrWhiteSpace($stdOut)) { Write-Host $stdOut -ForegroundColor Gray }
@@ -292,8 +305,8 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
             
             if ($Port -gt 0) {
                 Write-Host "`n-------------------------------------------------------" -ForegroundColor Gray
-                Write-Host " 👉 Host OS Access URL:     http://localhost:$Port" -ForegroundColor Green
-                Write-Host " 👉 Isolated Container URL: http://0.0.0.0:$Port" -ForegroundColor Yellow
+                Write-Host " $EmojiFinger Host OS Access URL:     http://localhost:$Port" -ForegroundColor Green
+                Write-Host " $EmojiFinger Isolated Container URL: http://0.0.0.0:$Port" -ForegroundColor Yellow
                 Write-Host "-------------------------------------------------------`n" -ForegroundColor Gray
                 $runArgs += @("-p", "${Port}:${Port}", "-e", "PORT=$Port")
             }
@@ -307,3 +320,7 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
         }
     }
 }
+
+
+
+
