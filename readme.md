@@ -35,14 +35,14 @@ Before installing, ensure you have **Docker Desktop** installed, running, and ac
 
 ## Quick Start & Installation
 
-Run the explicit command below for your operating system to clone the repository, navigate into the folder, and execute the installation setup in one shot:
+Run the explicit command below for your operating system to clone the repository into your user home directory, navigate into the folder, and execute the installation setup in one shot:
 
 ### 🛠️ On Windows (PowerShell)
 
 Ensure your PowerShell execution policy allows running local scripts, then execute this command:
 
 ```powershell
-git clone https://github.com/codesbysuman/alprust.git; cd alprust; Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force; .\install.ps1
+git clone https://github.com/codesbysuman/alprust.git ~\alprust; cd ~\alprust; Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force; .\install.ps1
 
 ```
 
@@ -53,7 +53,27 @@ git clone https://github.com/codesbysuman/alprust.git; cd alprust; Set-Execution
 Open your terminal and run this command:
 
 ```bash
-git clone https://github.com/codesbysuman/alprust.git && cd alprust && bash install.sh
+git clone https://github.com/codesbysuman/alprust.git ~/alprust && cd ~/alprust && bash install.sh
+
+```
+
+---
+
+## Updating alprust
+
+Since your system environment paths link directly to the repository folder, updating `alprust` to the latest version requires no installer re-runs. Simply pull down the latest changes from GitHub from anywhere:
+
+### 🛠️ On Windows (PowerShell)
+
+```powershell
+cd ~\alprust; git pull
+
+```
+
+### 🍏 / 🐧 On macOS or Linux
+
+```bash
+cd ~/alprust && git pull
 
 ```
 
