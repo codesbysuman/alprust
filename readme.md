@@ -39,7 +39,7 @@ Run the explicit one-liner command below for your operating system to clone the 
 ### 🛠️ On Windows (PowerShell)
 Ensure your PowerShell execution policy allows running local scripts, then execute this one-liner:
 ```powershell
-git clone [https://github.com/codesbysuman/alprust.git](https://github.com/codesbysuman/alprust.git) && cd alprust && Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force && .\install.ps1
+git clone https://github.com/codesbysuman/alprust.git && cd alprust && Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force && .\install.ps1
 
 ```
 
@@ -50,7 +50,7 @@ git clone [https://github.com/codesbysuman/alprust.git](https://github.com/codes
 Open your terminal and run this one-liner:
 
 ```bash
-git clone [https://github.com/codesbysuman/alprust.git](https://github.com/codesbysuman/alprust.git) && cd alprust && bash install.sh
+git clone https://github.com/codesbysuman/alprust.git && cd alprust && bash install.sh
 
 ```
 
