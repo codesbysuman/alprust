@@ -1,6 +1,6 @@
 # alprust 🚀
 
-`alprust` is a lightweight, zero-footprint CLI tool designed to compile ultra-lean, static Rust binaries targeted specifically for **Alpine Linux bare-metal instances** (ideal for low-resource environments like a 2GB RAM free-tier VPS).
+`alprust` is a lightweight, zero-footprint CLI tool designed to compile ultra-lean, statically linked Rust binaries targeted specifically for resource-constrained environments running minimalist Linux distributions like Alpine. It is the ideal pipeline for deploying highly efficient microservices, edge computing tasks, and optimized background worker engines where memory consumption and execution overhead must be kept to an absolute minimum.
 
 Created and maintained by **codesbysuman**.
 
@@ -20,12 +20,14 @@ Trying to set up this cross-compilation toolchain **natively or reliably on Wind
 
 * **Zero Codebase Clutter:** Operates entirely in-memory. It pipes build instructions straight to the Docker daemon via `stdin`, leaving your local repository completely clean.
 * **Quick Project Scaffolding:** Includes an automated initializer to instantly spin up standard Rust binary template directories and map dependencies using simple, human-readable console prompts.
-* **Native Subcommands:** Replaces raw Cargo calls seamlessly with commands like `alprust check` and `alprust test` run inside precise Alpine contexts.
-* **Persistent Cache Mounting:** Leverages BuildKit layer caching to save and reuse downloaded dependency crates across compilation runs. **Reduces internet data consumption to zero on subsequent checks or builds.**
-* **Edge-Case Ready (Flag Passthrough):** Future-proof design accepts arbitrary Cargo arguments (like `--features`, `--bin`, or `--offline`) seamlessly from the CLI without breaking.
-* **Automatic IPv4 Network Guardrail:** Includes an explicit `-ipv4` switch to patch the notorious Windows/WSL2 IPv6 black-hole routing bug which causes Alpine containers to freeze on network calls.
-* **Seamless Local Updates:** Includes a built-in `alprust update` command that updates the utility seamlessly via Git without altering your terminal's current working directory (`cwd`).
-* **Dynamic Configuration:** Automatically parses your `Cargo.toml` at runtime to isolate package markers and direct output binary paths.
+* **Native Subcommands:** Replaces raw Cargo calls seamlessly with subcommands like `alprust check` and `alprust test` executed inside precise Alpine contexts.
+* **Centralized Global Caching:** Leverages explicit, shared BuildKit layer cache pools across your entire machine. Dependencies downloaded by one project are instantly available to any other project, minimizing internet usage and slashing subsequent build times.
+* **Granular Cache Eviction:** Offers targeted cache control via a explicit modifier flag to safely refresh registry indexing without invalidating your underlying dependency asset store.
+* **Absolute Network Isolation:** Features a strict air-gap option that physically severs the compilation container's network interface, forcing execution entirely from local caches.
+* **Pristine, Distraction-Free Logging:** Mutes noisy Docker BuildKit trace streams behind clean, custom color-coded status banners so you only focus on your true compilation health and application output.
+* **Automatic Port Collision Shifting:** Dynamically scans host network availability before booting web sandboxes. If a requested port is busy, the tool automatically increments upward to the next free slot and prints clickable access hyperlinks.
+* **Bulletproof Interrupt Handling:** Injects an isolated internal init controller into runtime sandboxes to correctly catch and forward system termination hooks, enabling instant `Ctrl + C` clean-ups.
+* **Edge-Case Ready (Flag Passthrough):** Future-proof design accepts arbitrary Cargo arguments (like `--features`, `--bin`, or `--verbose`) seamlessly from the CLI without breaking.
 
 ---
 
@@ -102,7 +104,7 @@ alprust check
 
 ### 3. Isolated Test Executions
 
-Isolates and fires your project's full test suite inside an active Alpine context with layer caching active:
+Isolates and fires your project's full test suite inside an active Alpine context with centralized global caching active:
 
 ```bash
 alprust test
@@ -139,7 +141,8 @@ alprust run
 
 ### 2. Tool Modifiers
 
-* **`-offline`**: Forces Docker to rely exclusively on local baseline image target caches (e.g., `alprust check -offline`).
+* **`-offline`**: Disconnects the container network stack entirely (`--network none`) and forces compilation exclusively from your local global dependency store.
+* **`-refresh`**: Evicts the internal registry package index mappings for the current workspace to safely pull fresh upstream database sheets.
 * **`-ipv4`**: Activates defensive routing parameters. Use this flag if your container compilation hangs or times out on Windows/WSL2 due to missing local host IPv6 packet mappings (e.g., `alprust run -ipv4`).
 
 ### 3. Edge-Case Cargo Flags Passthrough
@@ -173,4 +176,4 @@ let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?
 
 Once booted via `alprust -port 8080`, open your browser or Postman on your host machine and hit: `http://localhost:8080/health`.
 
-Press **`Ctrl + C`** in your terminal to shut down the runtime sandbox cleanly. Your production-ready binary will be waiting natively inside your project's new `./output/` directory, ready to be copied directly onto your bare VPS metal.
+Press **`Ctrl + C`** in your terminal to shut down the runtime sandbox cleanly. Your production-ready binary will be waiting natively inside your project's new `./output/` directory, ready to be copied directly onto your infrastructure.

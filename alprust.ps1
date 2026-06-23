@@ -1,10 +1,11 @@
 param (
     [Parameter(Position=0)]
-    [ValidateSet("run", "check", "test", "build", "update", "init")]
+    [ValidateSet("run", "check", "test", "build", "update", "init", "help")]
     [string]$Action = "run",
     
     [switch]$Offline,
     [switch]$IPv4,
+    [switch]$Refresh,
     [int]$Port = 0,
 
     # Dynamic fallback for arbitrary edge-case Cargo options
@@ -12,25 +13,69 @@ param (
     [string[]]$PassthroughFlags
 )
 
-# 1. Handle background self-updates instantly
+# --- HELPER FUNCTION: BEAUTIFUL CLI HEADERS ---
+function Show-Header ($Message, $Color = "Cyan") {
+    Write-Host "`n[alprust] $Message" -ForegroundColor $Color
+}
+
+# 1. Global Help Matrix Menu Block
+if ($Action -eq "help") {
+    Write-Host @"
+
+=======================================================================
+   alprust CLI 🚀 - Ultra-lean Alpine Linux Compilation Suite
+=======================================================================
+Created and maintained by codesbysuman.
+
+Usage:
+  alprust [subcommand] [flags] [passthrough-cargo-options]
+
+Subcommands:
+  init      Scaffold a brand-new Rust binary workspace from scratch
+  check     Verify syntax & type safety using global cached crates
+  test      Run the full workspace unit test suite inside Alpine
+  build     Compile and export optimized static musl binaries
+  run       (Default) Build, test, and instantly execute inside sandbox
+  update    Pull the latest engine upgrades natively from GitHub
+  help      Display this unified architecture help documentation
+
+Core Tool Modifiers & Flags:
+  -port <int>  Map internal container network bridges out to host OS
+  -offline     Strict air-gap execution. Disconnects internet bridges
+  -refresh     Clear central dependency layers to force clean fetches
+  -ipv4        Enforce IPv4 stacks (Fixes WSL2 network freezing bugs)
+
+Examples:
+  alprust init
+  alprust check -offline
+  alprust run -port 8080 -refresh --features "local-auth"
+
+=======================================================================
+"@ -ForegroundColor Gray
+    Exit
+}
+
+# 2. Handle background self-updates instantly
 if ($Action -eq "update") {
-    Write-Host "Updating alprust from GitHub..." -ForegroundColor Cyan
+    Show-Header "Updating engine source files from GitHub..." "Cyan"
     git -C $PSScriptRoot pull
     Exit
 }
 
-# 2. Handle project scaffolding
+# 3. Handle project scaffolding (Bypasses Docker & Cargo sweeps)
 if ($Action -eq "init") {
-    Write-Host "--- alprust Scaffold Initializer ---" -ForegroundColor Cyan
+    Write-Host "`n==========================================" -ForegroundColor Cyan
+    Write-Host "   alprust Project Scaffolding Engine     " -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
     $currentFolder = (Get-Item .).Name
     
-    $name = Read-Host "Project Name [Default: $currentFolder]"
+    $name = Read-Host "📦 Project Name [Default: $currentFolder]"
     if ([string]::IsNullOrWhiteSpace($name)) { $name = $currentFolder }
     
-    $version = Read-Host "Version [Default: 0.1.0]"
+    $version = Read-Host "🏷️ Version [Default: 0.1.0]"
     if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.1.0" }
     
-    $depsInput = Read-Host "Dependencies (e.g., tokio@1.0, serde, axum@0.7)"
+    $depsInput = Read-Host "⚙️ Dependencies (comma separated, e.g., tokio@1, serde)"
     
     $tomlDeps = ""
     if (-not [string]::IsNullOrWhiteSpace($depsInput)) {
@@ -63,146 +108,161 @@ fn main() {
 "@
     $mainRs | Out-File "src/main.rs" -Encoding utf8 -Force
 
-    Write-Host "`n[Success] Rust project '$name' scaffolded cleanly!" -ForegroundColor Green
+    Write-Host "`n✨ Success! Rust project '$name' scaffolded cleanly!" -ForegroundColor Green
     Exit
 }
 
-# 3. Docker verification sweep
+# 4. Docker daemon verification sweep
 $dockerCheck = docker info 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Docker Desktop is not running! Please start Docker first."
+    Write-Error "[Error] Docker Desktop is not running! Please initialize your daemon first."
     Exit
 }
 
-# 4. Dynamic Cargo.toml context parser
+# 5. Dynamic Cargo.toml context parser
 if (-not (Test-Path "Cargo.toml")) {
-    Write-Error "No Cargo.toml found here. Make sure you are in your Rust project root!"
+    Write-Error "[Error] No Cargo.toml discovered. Ensure your shell paths match a Rust root directory!"
     Exit
 }
 
 $cargoContent = Get-Content "Cargo.toml" -Raw
 if ($cargoContent -match 'name\s*=\s*"([^"]+)"') {
     $binaryName = $Matches[1]
-    Write-Host "Target Binary Detected: $binaryName" -ForegroundColor Yellow
+    Write-Host "`nTarget Workspace Detected: " -NoNewline -ForegroundColor Gray
+    Write-Host $binaryName -ForegroundColor Yellow
 } else {
-    Write-Error "Could not read package name from Cargo.toml."
+    Write-Error "[Error] Unable to isolate package structural definitions inside Cargo.toml."
     Exit
 }
 
-# 5. Auto-Handle Port Allocation Collisions
+# 6. Auto-Handle Port Allocation Collisions
 if ($Port -gt 0 -and $Action -eq "run") {
     $originalPort = $Port
     while (Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue) {
         $Port++
     }
     if ($Port -ne $originalPort) {
-        Write-Host "[Warning] Port $originalPort is busy! Auto-shifting to open port: $Port" -ForegroundColor Yellow
+        Write-Host "[Warning] Port $originalPort is currently busy! Auto-shifting link to open slot: $Port" -ForegroundColor Yellow
     }
 }
 
-# 6. Format passthrough flags
+# 7. Format passthrough flags
 $cargoFlagsStr = if ($PassthroughFlags) { $PassthroughFlags -join " " } else { "" }
 
-# 7. Core Arguments Construction
-$buildArgs = @()
+# 8. Core Arguments Construction
+$buildArgs = @("--progress=quiet") # Quiet mode keeps our logging pristine and beautiful
 $runArgs = @()
 
 if ($Offline) {
-    Write-Host "[Mode] Strict Offline (Bypassing registry sweeps)..." -ForegroundColor Magenta
-    $buildArgs += "--pull=false"
+    Show-Header "Strict Air-Gap Mode Active. Virtual networks severed." "Magenta"
+    $buildArgs += @("--network", "none", "--pull=false")
     $runArgs += "--pull=never"
 }
 
 if ($IPv4) {
-    Write-Host "[Network] Enforcing strict IPv4 fallback network stack..." -ForegroundColor Cyan
+    Show-Header "Enforcing defensive IPv4 host mapping fallback layers..." "Cyan"
     $buildArgs += @("--network", "host")
     $runArgs += @("--sysctl", "net.ipv6.conf.all.disable_ipv6=1")
 }
 
 $buildArgs += @("--build-arg", "CARGO_FLAGS=$cargoFlagsStr")
+if ($Refresh) {
+    Show-Header "Cache flush requested. Evicting local compilation registry indexes..." "Yellow"
+    $buildArgs += @("--build-arg", "REFRESH_CACHE=true")
+} else {
+    $buildArgs += @("--build-arg", "REFRESH_CACHE=false")
+}
 
-# 8. Execute Subcommand Blocks
-switch ($Action) {
-    "check" {
-        Write-Host "Running 'cargo check' with hot layer registry caches..." -ForegroundColor Cyan
-        $dockerfileContent = @"
-FROM rust:alpine
+# 9. Dynamic In-Memory Shared Cache Template Layout Construction
+$cacheHeader = @"
+FROM rust:alpine AS base
+ARG CARGO_FLAGS
+ARG REFRESH_CACHE=false
 WORKDIR /app
 COPY . .
-ARG CARGO_FLAGS
-RUN --mount=type=cache,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,target=/usr/local/cargo/git/db \
+# Using central Shared cache IDs to ensure all distinct repositories pool dependency layers globally
+RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+    if [ "`$REFRESH_CACHE" = "true" ]; then rm -rf /usr/local/cargo/registry/cache/* /usr/local/cargo/git/db/*; fi
+"@
+
+# 10. Execute Subcommand Blocks
+switch ($Action) {
+    "check" {
+        Show-Header "Running syntax and type validation sweeps..." "Cyan"
+        $dockerfileContent = @"
+$cacheHeader
+RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
     cargo check `$CARGO_FLAGS
 "@
-        $buildArgs += @("--progress=plain", "-f", "-", ".")
+        $buildArgs += @("-f", "-", ".")
         $dockerfileContent | docker build @buildArgs
+        if ($LASTEXITCODE -eq 0) { Show-Header "Syntax verification passed cleanly!" "Green" }
         Exit
     }
     "test" {
-        Write-Host "Running 'cargo test' with hot layer registry caches..." -ForegroundColor Cyan
+        Show-Header "Running internal unit and integration tests..." "Cyan"
         $dockerfileContent = @"
-FROM rust:alpine
-WORKDIR /app
-COPY . .
-ARG CARGO_FLAGS
-RUN --mount=type=cache,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,target=/usr/local/cargo/git/db \
+$cacheHeader
+RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
     cargo test `$CARGO_FLAGS
 "@
-        $buildArgs += @("--progress=plain", "-f", "-", ".")
+        $buildArgs += @("-f", "-", ".")
         $dockerfileContent | docker build @buildArgs
+        if ($LASTEXITCODE -eq 0) { Show-Header "All tests passed flawlessly!" "Green" }
         Exit
     }
     Default {
         $dockerfileContent = @"
-FROM rust:alpine AS builder
-ARG BIN_NAME
-ARG CARGO_FLAGS
-WORKDIR /app
-COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,target=/usr/local/cargo/git/db \
+$cacheHeader
+RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
     cargo test `$CARGO_FLAGS
-RUN --mount=type=cache,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,target=/usr/local/cargo/git/db \
+RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
+    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
+    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
     cargo build --release --target x86_64-unknown-linux-musl `$CARGO_FLAGS
 
 FROM scratch
 ARG BIN_NAME
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
 "@
+        # Swap standard target layer alias for multi-stage execution routing
+        $dockerfileContent = $dockerfileContent -replace "FROM rust:alpine AS base", "FROM rust:alpine AS builder"
         $buildArgs += @("--build-arg", "BIN_NAME=$binaryName", "-f", "-", "-o", "./output", ".")
-        Write-Host "Compiling static Alpine binary with cache mounts active..." -ForegroundColor Cyan
+        
+        Show-Header "Compiling static Alpine production binary asset pipeline..." "Cyan"
         if (Test-Path "output") { Remove-Item "output" -Recurse -Force }
         
         $dockerfileContent | docker build @buildArgs
         
         if ($LASTEXITCODE -eq 0 -and $Action -eq "run") {
-            Write-Host "`n[Success] Static binary compiled perfectly!" -ForegroundColor Green
-            Write-Host "Booting your application inside Alpine environment..." -ForegroundColor Cyan
+            Show-Header "Static cross-compilation pipeline executed flawlessly!" "Green"
+            Show-Header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "Cyan"
             
             $hostOutputDir = (Get-Item .\output).FullName
-            
-            # --init perfectly registers and intercepts Ctrl+C termination signals
             $runArgs += @("--rm", "-it", "--init")
             
             if ($Port -gt 0) {
-                Write-Host "`n[Uniform Network Link Setup Active]" -ForegroundColor Gray
-                Write-Host "👉 Host Machine Access URL: http://localhost:$Port" -ForegroundColor Green
-                Write-Host "👉 Internal Container URL:  http://0.0.0.0:$Port" -ForegroundColor Yellow
+                Write-Host "`n-------------------------------------------------------" -ForegroundColor Gray
+                Write-Host " 👉 Host OS Access URL:     http://localhost:$Port" -ForegroundColor Green
+                Write-Host " 👉 Isolated Container URL: http://0.0.0.0:$Port" -ForegroundColor Yellow
+                Write-Host "-------------------------------------------------------`n" -ForegroundColor Gray
                 $runArgs += @("-p", "${Port}:${Port}", "-e", "PORT=$Port")
             }
             
             $runArgs += @("-v", "${hostOutputDir}:/app", "alpine", "/app/$binaryName")
             docker run @runArgs
         } elseif ($LASTEXITCODE -eq 0) {
-            Write-Host "`n[Success] Static binary saved cleanly to ./output/$binaryName" -ForegroundColor Green
+            Show-Header "Static standalone binary extracted cleanly to ./output/$binaryName" "Green"
         } else {
-            Write-Error "Build execution failed inside the pipeline container."
+            Write-Error "[Error] Build pipeline halted due to code compilation failures."
         }
     }
 }
