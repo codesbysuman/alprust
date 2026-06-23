@@ -7,6 +7,7 @@ show_header() {
         "green")  echo -e "\n\033[32m[alprust] $msg\033[0m" ;;
         "yellow") echo -e "\n\033[33m[alprust] $msg\033[0m" ;;
         "magenta")echo -e "\n\033[35m[alprust] $msg\033[0m" ;;
+        "red")    echo -e "\n\033[31m[alprust] $msg\033[0m" ;;
         *)        echo -e "\n\033[36m[alprust] $msg\033[0m" ;;
     esac
 }
@@ -41,6 +42,7 @@ Core Tool Modifiers & Flags:
   -port <int>  Map internal container network bridges out to host OS
   -offline     Strict air-gap execution. Disconnects internet bridges
   -refresh     Safely pull the newest crate versions into the central cache
+  -verbose     Stream unfiltered raw execution and compilation logs
   -ipv4        Enforce IPv4 stacks (Fixes WSL2 network freezing bugs)
 
 =======================================================================
@@ -127,6 +129,7 @@ echo -e "\033[90mTarget Workspace Detected: \033[0m\033[33m$binaryName\033[0m"
 offline=false
 ipv4=false
 refresh=false
+verbose=false
 port=0
 passthroughFlags=()
 
@@ -135,6 +138,7 @@ while [[ $# -gt 0 ]]; do
         -offline|--offline) offline=true; shift ;;
         -ipv4|--ipv4)       ipv4=true; shift ;;
         -refresh|--refresh) refresh=true; shift ;;
+        -verbose|--verbose) verbose=true; shift ;;
         -port|--port)       port="$2"; shift 2 ;;
         *)                  passthroughFlags+=("$1"); shift ;;
     esac
@@ -152,7 +156,11 @@ if [ "$port" -gt 0 ] && [ "$action" == "run" ]; then
     fi
 fi
 
-buildArgs=("--progress=quiet") 
+if [ "$verbose" = true ]; then
+    buildArgs=("--progress=plain")
+else
+    buildArgs=("--progress=quiet")
+fi
 runArgs=()
 
 if [ "$offline" = true ]; then
@@ -177,21 +185,59 @@ fi
 
 cacheHeader="FROM rust:alpine AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nWORKDIR /app\nCOPY . .\nRUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ \"\$REFRESH_CACHE\" = \"true\" ]; then cargo update; fi"
 
+execute_build_with_ticker() {
+    local df_content="$1"
+    shift
+    local args=("${@}")
+
+    if [ "$verbose" = true ]; then
+        echo -e "$df_content" | docker build "${args[@]}"
+        return $?
+    fi
+
+    # Create temporary log file for capturing failures cleanly
+    local log_file=$(mktemp)
+    echo -e "$df_content" | docker build "${args[@]}" > "$log_file" 2>&1 &
+    local pid=$!
+    
+    local start_time=$(date +%s)
+    while kill -0 $pid 2>/dev/null; do
+        local current_time=$(date +%s)
+        local elapsed=$((current_time - start_time))
+        printf "\r\033[36m[alprust] Processing compilation asset layers... (%02ds)\033[0m" $elapsed
+        sleep 0.2
+    done
+    wait $pid
+    local status=$?
+    printf "\r\033[36m[alprust] Processing compilation asset layers... Done!       \033[0m\n"
+    
+    if [ $status -ne 0 ]; then
+        echo -e "\n\033[31m======================================================="
+        echo -e " 🔥 BUILD FAILURE DETECTED INSIDE THE CONTAINER"
+        echo -e "=======================================================\033[0m"
+        cat "$log_file"
+    fi
+    rm -f "$log_file"
+    return $status
+}
+
 if [ "$action" == "check" ]; then
     show_header "Running syntax and type validation sweeps..." "cyan"
     buildArgs+=("-f" "-" ".")
     df="$cacheHeader\nRUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo check \$CARGO_FLAGS"
-    echo -e "$df" | docker build "${buildArgs[@]}"
-    [ $? -eq 0 ] && show_header "Syntax verification passed cleanly!" "green"
-    exit $?
+    execute_build_with_ticker "$df" "${buildArgs[@]}"
+    status=$?
+    [ $status -eq 0 ] && show_header "Syntax verification passed cleanly!" "green"
+    exit $status
 
 elif [ "$action" == "test" ]; then
     show_header "Running internal unit and integration tests..." "cyan"
     buildArgs+=("-f" "-" ".")
     df="$cacheHeader\nRUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS"
-    echo -e "$df" | docker build "${buildArgs[@]}"
-    [ $? -eq 0 ] && show_header "All tests passed flawlessly!" "green"
-    exit $?
+    execute_build_with_ticker "$df" "${buildArgs[@]}"
+    status=$?
+    [ $status -eq 0 ] && show_header "All tests passed flawlessly!" "green"
+    exit $status
 
 else
     buildArgs+=("--build-arg" "BIN_NAME=$binaryName" "-f" "-" "-o" "./output" ".")
@@ -215,9 +261,10 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/\$BIN_NAME /
 EOF
 )
 
-    echo "$df" | docker build "${buildArgs[@]}"
+    execute_build_with_ticker "$df" "${buildArgs[@]}"
+    status=$?
 
-    if [ $? -eq 0 ] && [ "$action" == "run" ]; then
+    if [ $status -eq 0 ] && [ "$action" == "run" ]; then
         show_header "Static cross-compilation pipeline executed flawlessly!" "green"
         show_header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "cyan"
         
@@ -234,10 +281,9 @@ EOF
         
         runArgs+=("-v" "$hostOutputDir:/app" "alpine" "/app/$binaryName")
         docker run "${runArgs[@]}"
-    elif [ $? -eq 0 ]; then
+    elif [ $status -eq 0 ]; then
         show_header "Static standalone binary extracted cleanly to ./output/$binaryName" "green"
     else
-        echo -e "\033[31m[Error] Build pipeline halted due to code compilation failures.\033[0m" >&2
-        exit 1
+        exit $status
     fi
 fi

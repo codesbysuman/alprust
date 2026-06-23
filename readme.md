@@ -1,6 +1,6 @@
 # alprust 🚀
 
-`alprust` is a lightweight, zero-footprint CLI tool designed to compile ultra-lean, statically linked Rust binaries targeted specifically for resource-constrained environments running minimalist Linux distributions like Alpine. It is the ideal pipeline for deploying highly efficient microservices, edge computing tasks, and optimized background worker engines where memory consumption and execution overhead must be kept to an absolute minimum.
+`alprust` is a lightweight, zero-footprint CLI tool designed to compile ultra-lean, statically linked Rust binaries targeted specifically for resource-constrained environments running minimalist Linux distributions like Alpine. It provides a seamless local pipeline for deploying highly efficient microservices, edge computing tasks, and optimized background worker engines where memory consumption and execution overhead must be kept to an absolute minimum.
 
 Created and maintained by **codesbysuman**.
 
@@ -19,14 +19,15 @@ Trying to set up this cross-compilation toolchain **natively or reliably on Wind
 ## Features
 
 * **Zero Codebase Clutter:** Operates entirely in-memory. It pipes build instructions straight to the Docker daemon via `stdin`, leaving your local repository completely clean.
-* **Future-Proof Project Scaffolding:** Includes an automated initializer to instantly spin up standard Rust binary template directories. It dynamically prompts for your project name, version metadata, dependency maps, and target **Rust Edition** (fully supporting 2021, 2024, and beyond).
+* **Future-Proof Project Scaffolding:** Includes an automated initializer (`alprust init`) to instantly spin up standard Rust binary template directories. It dynamically prompts for your project name, version metadata, dependency maps, and target **Rust Edition** (fully supporting 2021, 2024, and beyond).
 * **Native Subcommands:** Replaces raw Cargo calls seamlessly with subcommands like `alprust check` and `alprust test` executed inside precise Alpine contexts.
 * **Centralized Global Caching:** Leverages explicit, shared BuildKit layer cache pools across your entire machine. Dependencies downloaded by one project are instantly available to any other project, minimizing internet usage and slashing subsequent build times.
-* **Secure, In-Place Cache Eviction:** Offers targeted cache control via an explicit modifier flag. Passing `-refresh` safely updates package dependencies via `cargo update` inside the container without destructively wiping out unrelated cached projects.
-* **Absolute Network Isolation:** Features a strict air-gap option that physically severs the compilation container's network interface (`--network none`), forcing execution entirely from local caches.
-* **Pristine, Distraction-Free Logging:** Mutes noisy Docker BuildKit trace streams behind clean, custom color-coded status banners so you only focus on your true compilation health and application output.
+* **Secure, In-Place Cache Eviction:** Offers targeted cache control via an explicit modifier flag. Passing `-refresh` safely coordinates an atomic `cargo update` inside the container without destructively wiping out unrelated cached projects.
+* **Absolute Network Isolation:** Features a strict air-gap option (`-offline`) that physically severs the compilation container's network interface (`--network none`), forcing execution entirely from local caches.
+* **Live Progress Ticker & Adaptive Logging:** Mutes noisy Docker BuildKit tracking data behind a clean, live **in-place stopwatch ticker** counting execution time on a single line. If a compilation fails, the engine instantly extracts the internal logs and dumps the error stream directly onto your screen.
+* **On-Demand Verbosity:** Supports a dedicated `-verbose` switch to bypass stream guards entirely whenever you need to see raw, unedited live tracking lines.
 * **Automatic Port Collision Shifting:** Dynamically scans host network availability before booting web sandboxes. If a requested port is busy, the tool automatically increments upward to the next free slot and prints clickable access hyperlinks.
-* **Bulletproof Interrupt Handling:** Injects an isolated internal init controller into runtime sandboxes to correctly catch and forward system termination hooks, enabling instant `Ctrl + C` clean-ups.
+* **Bulletproof Interrupt Handling:** Injects an isolated internal init controller (`--init`) into runtime sandboxes to correctly catch and forward system termination hooks, enabling instant `Ctrl + C` clean-ups.
 * **Edge-Case Ready (Flag Passthrough):** Future-proof design accepts arbitrary Cargo arguments (like `--features`, `--bin`, or `--verbose`) seamlessly from the CLI without breaking.
 
 ---
@@ -78,7 +79,16 @@ alprust update
 
 Simply navigate to your desired workspace or the root directory of an existing Rust project and call your action:
 
-### 1. Quick Project Scaffolding
+### 1. Unified Architecture Reference Menu
+
+Prints a comprehensive list of subcommands, core flags, dynamic modifiers, and real-world execution examples:
+
+```bash
+alprust help
+
+```
+
+### 2. Quick Project Scaffolding
 
 Creates a clean, standard Rust binary structure inside an empty directory. It prompts for configuration strings using normal human text:
 
@@ -94,7 +104,7 @@ alprust init
 * **Rust Edition:** `2024` (Defaults to `2021` if left blank)
 * **Dependencies:** `tokio@1.35, serde, axum@0.7.2` (Specifying no `@version` configuration defaults to the latest `*` package wildcard)
 
-### 2. Verification Checking
+### 3. Verification Checking
 
 Validates compilation integrity and tracks architectural warnings inside the Alpine Linux environment without triggering a full production build:
 
@@ -103,7 +113,7 @@ alprust check
 
 ```
 
-### 3. Isolated Test Executions
+### 4. Isolated Test Executions
 
 Isolates and fires your project's full test suite inside an active Alpine context with centralized global caching active:
 
@@ -112,7 +122,7 @@ alprust test
 
 ```
 
-### 4. Production Compilation Only
+### 5. Production Compilation Only
 
 Compiles and extracts the bare-metal static binary straight into your local `./output/` folder without launching a live verification container sandbox:
 
@@ -121,7 +131,7 @@ alprust build
 
 ```
 
-### 5. Continuous Dev Loop (Default Action)
+### 6. Continuous Dev Loop (Default Action)
 
 Runs test workflows, outputs the static binary, and **immediately boots it live** inside an Alpine runtime container instance:
 
@@ -144,6 +154,7 @@ alprust run
 
 * **`-offline`**: Disconnects the container network stack entirely (`--network none`) and forces compilation exclusively from your local global dependency store.
 * **`-refresh`**: Safely coordinates a non-destructive `cargo update` inside the cache workspace to grab newer package versions allowed by your version bounds while guarding older history.
+* **`-verbose`**: Streams raw, unedited compilation text straight into the terminal workspace for deep debugging sweeps.
 * **`-ipv4`**: Activates defensive routing parameters. Use this flag if your container compilation hangs or times out on Windows/WSL2 due to missing local host IPv6 packet mappings (e.g., `alprust run -ipv4`).
 
 ### 3. Edge-Case Cargo Flags Passthrough
@@ -158,7 +169,7 @@ alprust build --features env_logger
 alprust check --bin specialized_worker
 
 # Combine tool-specific fallback flags with standard cargo features
-alprust run -ipv4 -port 8080 --features "nitro local-testing"
+alprust run -ipv4 -verbose -port 8080 --features "nitro local-testing"
 
 ```
 

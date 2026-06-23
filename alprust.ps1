@@ -6,6 +6,7 @@ param (
     [switch]$Offline,
     [switch]$IPv4,
     [switch]$Refresh,
+    [switch]$Verbose,
     [int]$Port = 0,
 
     # Dynamic fallback for arbitrary edge-case Cargo options
@@ -41,6 +42,7 @@ Core Tool Modifiers & Flags:
   -port <int>  Map internal container network bridges out to host OS
   -offline     Strict air-gap execution. Disconnects internet bridges
   -refresh     Safely pull the newest crate versions into the central cache
+  -verbose     Stream unfiltered raw execution and compilation logs
   -ipv4        Enforce IPv4 stacks (Fixes WSL2 network freezing bugs)
 
 =======================================================================
@@ -139,7 +141,9 @@ if ($Port -gt 0 -and $Action -eq "run") {
 
 $cargoFlagsStr = if ($PassthroughFlags) { $PassthroughFlags -join " " } else { "" }
 
-$buildArgs = @("--progress=quiet") 
+# Configure BuildKit streaming modes based on verbosity preferences
+$progressMode = if ($Verbose) { "plain" } else { "quiet" }
+$buildArgs = @("--progress=$progressMode") 
 $runArgs = @()
 
 if ($Offline) {
@@ -174,6 +178,50 @@ RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/d
     if [ "`$REFRESH_CACHE" = "true" ]; then cargo update; fi
 "@
 
+# --- CORE IN-MEMORY STREAM EXECUTION FUNCTION WITH TIME TICKERS ---
+function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
+    if ($Verbose) {
+        # If verbose, bypass tickers and pipe raw streams instantly
+        $DockerfileContent | docker build $Arguments
+        return $LASTEXITCODE
+    }
+
+    # Internal dynamic process start for capturing errors while ticking in place
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "docker"
+    $psi.Arguments = "build " + ($Arguments -join " ")
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.StandardInput.WriteLine($DockerfileContent)
+    $proc.StandardInput.Close()
+    
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not $proc.HasExited) {
+        $elapsed = [string]::Format("{0:d2}.{1:d1}s", $sw.Elapsed.Seconds, ($sw.Elapsed.Milliseconds / 100))
+        Write-Host "`r[alprust] Processing compilation asset layers... ($elapsed)" -NoNewline -ForegroundColor Cyan
+        Start-Sleep -Milliseconds 100
+    }
+    $sw.Stop()
+    Write-Host "`r[alprust] Processing compilation asset layers... Done!       " -ForegroundColor Cyan
+    
+    $stdOut = $proc.StandardOutput.ReadToEnd()
+    $stdErr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    
+    if ($proc.ExitCode -ne 0) {
+        Write-Host "`n=======================================================" -ForegroundColor Red
+        Write-Host " 🔥 BUILD FAILURE DETECTED INSIDE THE CONTAINER" -ForegroundColor Red
+        Write-Host "=======================================================" -ForegroundColor Red
+        if (-not [string]::IsNullOrWhiteSpace($stdErr)) { Write-Host $stdErr -ForegroundColor DarkRed }
+        if (-not [string]::IsNullOrWhiteSpace($stdOut)) { Write-Host $stdOut -ForegroundColor Gray }
+    }
+    return $proc.ExitCode
+}
+
 switch ($Action) {
     "check" {
         Show-Header "Running syntax and type validation sweeps..." "Cyan"
@@ -185,8 +233,8 @@ RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/d
     cargo check `$CARGO_FLAGS
 "@
         $buildArgs += @("-f", "-", ".")
-        $dockerfileContent | docker build @buildArgs
-        if ($LASTEXITCODE -eq 0) { Show-Header "Syntax verification passed cleanly!" "Green" }
+        $code = Execute-BuildWithTicker $dockerfileContent $buildArgs
+        if ($code -eq 0) { Show-Header "Syntax verification passed cleanly!" "Green" } else { Exit $code }
         Exit
     }
     "test" {
@@ -199,8 +247,8 @@ RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/d
     cargo test `$CARGO_FLAGS
 "@
         $buildArgs += @("-f", "-", ".")
-        $dockerfileContent | docker build @buildArgs
-        if ($LASTEXITCODE -eq 0) { Show-Header "All tests passed flawlessly!" "Green" }
+        $code = Execute-BuildWithTicker $dockerfileContent $buildArgs
+        if ($code -eq 0) { Show-Header "All tests passed flawlessly!" "Green" } else { Exit $code }
         Exit
     }
     Default {
@@ -233,9 +281,9 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
         Show-Header "Compiling static Alpine production binary asset pipeline..." "Cyan"
         if (Test-Path "output") { Remove-Item "output" -Recurse -Force }
         
-        $dockerfileContent | docker build @buildArgs
+        $code = Execute-BuildWithTicker $dockerfileContent $buildArgs
         
-        if ($LASTEXITCODE -eq 0 -and $Action -eq "run") {
+        if ($code -eq 0 -and $Action -eq "run") {
             Show-Header "Static cross-compilation pipeline executed flawlessly!" "Green"
             Show-Header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "Cyan"
             
@@ -252,10 +300,10 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/`$BIN_NAME /
             
             $runArgs += @("-v", "${hostOutputDir}:/app", "alpine", "/app/$binaryName")
             docker run @runArgs
-        } elseif ($LASTEXITCODE -eq 0) {
+        } elseif ($code -eq 0) {
             Show-Header "Static standalone binary extracted cleanly to ./output/$binaryName" "Green"
         } else {
-            Write-Error "[Error] Build pipeline halted due to code compilation failures."
+            Exit $code
         }
     }
 }
