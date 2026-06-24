@@ -26,5 +26,16 @@ else
     exit 1
 fi
 
+# Test 3: Verify sandbox error check
+printf "Test 3: Verifying sandbox error check..."
+output=$(bash ../alprust sandbox ./invalid-path 2>&1)
+if echo "$output" | grep -q "Invalid binary path"; then
+    echo -e " \033[32mPASSED\033[0m"
+else
+    echo -e " \033[31mFAILED\033[0m"
+    echo "Output was: $output"
+    exit 1
+fi
+
 echo -e "\033[32mAll tests completed successfully!\033[0m"
 exit 0

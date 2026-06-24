@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param (
     [Parameter(Position=0)]
-    [ValidateSet("run", "check", "test", "build", "self-update", "init", "help", "clean")]
+    [ValidateSet("run", "check", "test", "build", "self-update", "init", "help", "clean", "sandbox")]
     [string]$Action = "run",
     
     [switch]$Offline,
@@ -21,7 +21,26 @@ param (
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-$AlprustVersion = 24
+function Get-ToolVersion {
+    if (Test-Path (Join-Path $PSScriptRoot ".git") -PathType Container) {
+        if (Get-Command git -ErrorAction SilentlyContinue) {
+            $latestTag = git -C $PSScriptRoot describe --tags --abbrev=0 2>$null
+            if (-not [string]::IsNullOrEmpty($latestTag)) {
+                $gitDesc = git -C $PSScriptRoot describe --tags --always 2>$null
+                if (-not [string]::IsNullOrEmpty($gitDesc)) {
+                    return $gitDesc.Trim()
+                }
+            }
+            $commitCount = git -C $PSScriptRoot rev-list --count HEAD 2>$null
+            if (-not [string]::IsNullOrEmpty($commitCount)) {
+                return "0.1.$($commitCount.Trim())"
+            }
+        }
+    }
+    return "0.1.24-dev"
+}
+
+$AlprustVersion = Get-ToolVersion
 
 $Verbose = $PSBoundParameters.ContainsKey('Verbose')
 
@@ -57,6 +76,7 @@ Subcommands:
   clean     Clear target compilation cache for the current workspace
   build     Compile and export optimized static musl binaries
   run       (Default) Build, test, and instantly execute inside sandbox
+  sandbox   Execute pre-compiled binary inside Alpine sandbox container
   self-update Pull the latest engine upgrades natively from GitHub
   help      Display this unified architecture help documentation
 
@@ -507,6 +527,52 @@ RUN $cacheMounts \
             $cleanArgs = $buildArgs + @("--build-arg", "BIN_NAME=$binaryName", ".")
             $code = Execute-BuildWithTicker $dockerfileContent $cleanArgs
             if ($code -eq 0) { Show-Header "Compilation cache cleared cleanly!" "Green" } else { $scriptExitCode = $code; return }
+        }
+        "sandbox" {
+            if ($PassthroughFlags.Count -gt 0) {
+                $customBinPath = $PassthroughFlags[0]
+                $resolvedPath = Resolve-Path $customBinPath -ErrorAction SilentlyContinue
+                if ($null -eq $resolvedPath) {
+                    Write-Host "[Error] Invalid binary path: $customBinPath" -ForegroundColor Red
+                    Exit 1
+                }
+                $absBinPath = $resolvedPath.Path
+                if (Test-Path $absBinPath -PathType Container) {
+                    $binDir = $absBinPath
+                    $binName = $binaryName
+                    $absBinPath = Join-Path $binDir $binName
+                } else {
+                    $binDir = Split-Path $absBinPath -Parent
+                    $binName = Split-Path $absBinPath -Leaf
+                }
+            } else {
+                $binDir = Join-Path $PWD.Path "dist"
+                $binName = $binaryName
+                $absBinPath = Join-Path $binDir $binName
+            }
+
+            if (-not (Test-Path $absBinPath)) {
+                Write-Host "[Error] Binary file does not exist: $absBinPath" -ForegroundColor Red
+                Exit 1
+            }
+
+            Show-Header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "Cyan"
+            
+            $hostOutputDir = (Get-Item $binDir).FullName
+            $runArgs += @("--rm", "-it", "--init")
+            
+            if ($Port -gt 0) {
+                Write-Host "-------------------------------------------------------" -ForegroundColor Gray
+                Write-Host " 👉 Host OS Access URL:     http://localhost:$Port" -ForegroundColor Green
+                Write-Host " 👉 Isolated Container URL: http://0.0.0.0:$Port" -ForegroundColor Yellow
+                Write-Host "-------------------------------------------------------`n" -ForegroundColor Gray
+                $runArgs += @("-p", "${Port}:${Port}", "-e", "PORT=$Port")
+            }
+            
+            $runArgs += @("-v", "${hostOutputDir}:/app", "alpine", "/app/$binName")
+            docker run @runArgs
+            $scriptExitCode = $LASTEXITCODE
+            return
         }
         Default {
             $dockerfileContent = @"

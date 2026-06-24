@@ -24,5 +24,16 @@ if ($output -match "Syntax verification passed cleanly") {
     exit 1
 }
 
+# Test 3: Verify sandbox error check
+Write-Host "Test 3: Verifying sandbox error check..." -NoNewline
+$output = powershell -ExecutionPolicy Bypass -Command "../alprust.ps1 sandbox ./invalid-path" 2>&1
+if ($output -match "Invalid binary path") {
+    Write-Host " PASSED" -ForegroundColor Green
+} else {
+    Write-Host " FAILED" -ForegroundColor Red
+    Write-Host "Output was: $output"
+    exit 1
+}
+
 Write-Host "All tests completed successfully!" -ForegroundColor Green
 exit 0

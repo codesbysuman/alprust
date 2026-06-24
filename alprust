@@ -1,6 +1,36 @@
 #!/usr/bin/env bash
 
-ALPRUST_VERSION=24
+get_script_dir() {
+    local source="${BASH_SOURCE[0]}"
+    while [ -h "$source" ]; do
+        local dir="$( cd -P "$( dirname "$source" )" >/dev/null 2>&1 && pwd )"
+        source="$(readlink "$source")"
+        [[ $source != /* ]] && source="$dir/$source"
+    done
+    cd -P "$( dirname "$source" )" >/dev/null 2>&1 && pwd
+}
+
+get_tool_version() {
+    local script_dir=$(get_script_dir)
+    if [ -d "$script_dir/.git" ] && command -v git >/dev/null 2>&1; then
+        local latest_tag=$(git -C "$script_dir" describe --tags --abbrev=0 2>/dev/null)
+        if [ -n "$latest_tag" ]; then
+            local git_desc=$(git -C "$script_dir" describe --tags --always 2>/dev/null)
+            if [ -n "$git_desc" ]; then
+                echo "$git_desc"
+                return 0
+            fi
+        fi
+        local commit_count=$(git -C "$script_dir" rev-list --count HEAD 2>/dev/null)
+        if [ -n "$commit_count" ]; then
+            echo "0.1.$commit_count"
+            return 0
+        fi
+    fi
+    echo "0.1.24-dev"
+}
+
+ALPRUST_VERSION=$(get_tool_version)
 
 show_header() {
     local msg="$1"
@@ -15,7 +45,7 @@ show_header() {
 }
 
 action="run"
-if [[ "$1" =~ ^(run|check|test|clean|build|self-update|init|help)$ ]]; then
+if [[ "$1" =~ ^(run|check|test|clean|build|self-update|init|help|sandbox)$ ]]; then
     action="$1"
     shift
 fi
@@ -38,6 +68,7 @@ Subcommands:
   clean     Clear target compilation cache for the current workspace
   build     Compile and export optimized static musl binaries
   run       (Default) Build, test, and instantly execute inside sandbox
+  sandbox   Execute pre-compiled binary inside Alpine sandbox container
   self-update Pull the latest engine upgrades natively from GitHub
   help      Display this unified architecture help documentation
 
@@ -55,7 +86,7 @@ fi
 
 if [ "$action" == "self-update" ]; then
     show_header "Updating engine source files from GitHub..." "cyan"
-    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+    SCRIPT_DIR=$(get_script_dir)
     git -C "$SCRIPT_DIR" pull
     exit $?
 fi
@@ -442,6 +473,50 @@ elif [ "$action" == "clean" ]; then
     status=$?
     [ $status -eq 0 ] && show_header "Compilation cache cleared cleanly!" "green"
     exit $status
+
+elif [ "$action" == "sandbox" ]; then
+    if [ -n "$1" ]; then
+        custom_bin_path="$1"
+        abs_bin_path=$(realpath "$custom_bin_path" 2>/dev/null || readlink -f "$custom_bin_path" 2>/dev/null)
+        if [ -z "$abs_bin_path" ]; then
+            echo -e "\033[31m[Error] Invalid binary path: $custom_bin_path\033[0m" >&2
+            exit 1
+        fi
+        if [ -d "$abs_bin_path" ]; then
+            bin_dir="$abs_bin_path"
+            bin_name="$binaryName"
+            abs_bin_path="$bin_dir/$bin_name"
+        else
+            bin_dir=$(dirname "$abs_bin_path")
+            bin_name=$(basename "$abs_bin_path")
+        fi
+    else
+        bin_dir="$(pwd)/dist"
+        bin_name="$binaryName"
+        abs_bin_path="$bin_dir/$bin_name"
+    fi
+
+    if [ ! -f "$abs_bin_path" ]; then
+        echo -e "\033[31m[Error] Binary file does not exist: $abs_bin_path\033[0m" >&2
+        exit 1
+    fi
+
+    show_header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "cyan"
+    
+    hostOutputDir="$bin_dir"
+    runArgs+=("--rm" "-it" "--init")
+    
+    if [ "$port" -gt 0 ]; then
+        echo -e "\033[90m-------------------------------------------------------\033[0m"
+        echo -e " \033[32m👉 Host OS Access URL:     http://localhost:$port\033[0m"
+        echo -e " \033[33m👉 Isolated Container URL: http://0.0.0.0:$port\033[0m"
+        echo -e "\033[90m-------------------------------------------------------\033[0m\n"
+        runArgs+=("-p" "$port:$port" "-e" "PORT=$port")
+    fi
+    
+    runArgs+=("-v" "$hostOutputDir:/app" "alpine" "/app/$bin_name")
+    docker run "${runArgs[@]}"
+    exit $?
 
 else
     rm -rf ./.alprust.dist.tmp
