@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+ALPRUST_VERSION=24
+
 show_header() {
     local msg="$1"
     local color="$2"
@@ -19,10 +21,10 @@ if [[ "$1" =~ ^(run|check|test|clean|build|self-update|init|help)$ ]]; then
 fi
 
 if [ "$action" == "help" ]; then
-    cat << 'EOF'
+    cat << EOF
 
 =======================================================================
-   alprust CLI 🚀 - Ultra-lean Alpine Linux Compilation Suite
+   alprust CLI v${ALPRUST_VERSION} 🚀 - Ultra-lean Alpine Linux Compilation Suite
 =======================================================================
 Created and maintained by codesbysuman.
 

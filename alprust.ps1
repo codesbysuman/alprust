@@ -21,6 +21,8 @@ param (
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
+$AlprustVersion = 24
+
 $Verbose = $PSBoundParameters.ContainsKey('Verbose')
 
 # Unicode emoji definitions using character codes for system encoding/locale immunity
@@ -41,8 +43,8 @@ if ($Action -eq "help") {
     Write-Host @"
 
 =======================================================================
-   alprust CLI $EmojiRocket - Ultra-lean Alpine Linux Compilation Suite
-=======================================================================
+   alprust CLI v$AlprustVersion $EmojiRocket - Ultra-lean Alpine Linux Compilation Suite
+======================================================================="
 Created and maintained by codesbysuman.
 
 Usage:
