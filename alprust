@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 show_header() {
     local msg="$1"
@@ -207,7 +207,8 @@ if [ "$ipv4" = true ]; then
     runArgs+=("--sysctl" "net.ipv6.conf.all.disable_ipv6=1")
 fi
 
-buildArgs+=("--build-arg" "CARGO_FLAGS=$cargoFlagsStr")
+cacheBypass=$(date +%s%N 2>/dev/null || date +%s)
+buildArgs+=("--build-arg" "CARGO_FLAGS=$cargoFlagsStr" "--build-arg" "CACHE_BYPASS=$cacheBypass")
 if [ "$refresh" = true ]; then
     show_header "Atomic refresh triggered. Scanning upstream for newer package variations..." "yellow"
     buildArgs+=("--build-arg" "REFRESH_CACHE=true")
@@ -217,7 +218,7 @@ fi
 
 cacheMounts="--mount=type=cache,id=alprust-target-$binaryName,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-registry-index,target=/usr/local/cargo/registry/index --mount=type=cache,id=alprust-registry-src,target=/usr/local/cargo/registry/src --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db --mount=type=cache,id=alprust-git-checkouts,target=/usr/local/cargo/git/checkouts"
 
-cacheHeader="FROM rust:$rustVersion AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nWORKDIR /app\nCOPY . .\nRUN $cacheMounts if [ \"\$REFRESH_CACHE\" = \"true\" ]; then cargo update; fi"
+cacheHeader="FROM rust:$rustVersion AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nARG CACHE_BYPASS\nWORKDIR /app\nCOPY . .\nRUN echo \$CACHE_BYPASS > /dev/null\nRUN $cacheMounts if [ \"\$REFRESH_CACHE\" = \"true\" ]; then cargo update; fi"
 
 execute_build_with_ticker() {
     local df_content="$1"
@@ -246,9 +247,7 @@ execute_build_with_ticker() {
     printf "\r\033[36m[alprust] Processing compilation asset layers... Done!       \033[0m\n"
     
     if [ $status -ne 0 ]; then
-        echo -e "\033[31m======================================================="
-        echo -e " 🔥 BUILD FAILURE DETECTED INSIDE THE CONTAINER"
-        echo -e "=======================================================\033[0m"
+        echo -e "\033[31m[alprust] 🔥 Build failure detected inside the container\033[0m"
         
         if [ "$verbose" = false ] && [ -f "$log_file" ]; then
             # Parse and clean output lines
@@ -277,6 +276,11 @@ execute_build_with_ticker() {
                 elif [[ "$line" =~ ^#[0-9]+[[:space:]]+(.*)$ ]]; then
                     clean_line="${BASH_REMATCH[1]}"
                 fi
+                
+                # Filter out structural Docker steps and BuildKit metadata
+                if [[ "$clean_line" =~ ^\[[a-zA-Z0-9_-]+[[:space:]]+[0-9]+/[0-9]+\] ]]; then continue; fi
+                if [[ "$clean_line" =~ ^\[internal\] ]]; then continue; fi
+                if [[ "$clean_line" =~ ^(DONE|CACHED|resolve|transferring|exporting|ERROR:)([[:space:]]|$) ]]; then continue; fi
                 
                 # Filter out blank lines from compilation output count
                 if [ -n "$(echo "$clean_line" | xargs 2>/dev/null)" ]; then
@@ -396,8 +400,10 @@ FROM rust:$rustVersion AS builder
 ARG BIN_NAME
 ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
+ARG CACHE_BYPASS
 WORKDIR /app
 COPY . .
+RUN echo \$CACHE_BYPASS > /dev/null
 RUN $cacheMounts if [ "\$REFRESH_CACHE" = "true" ]; then cargo update; fi
 RUN $cacheMounts cargo test \$CARGO_FLAGS
 RUN $cacheMounts cargo build --release \$CARGO_FLAGS && (cp /app/target/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null)

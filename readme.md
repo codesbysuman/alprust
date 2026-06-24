@@ -53,13 +53,12 @@ git clone https://github.com/codesbysuman/alprust.git ~\alprust; cd ~\alprust; S
 
 *Note: Please close and restart your terminal window after the script finishes to refresh your environment PATH variables.*
 
-### 🍏 / 🐧 On macOS or Linux
+### 🍏 / 🐧 On macOS, Linux, or Termux (Android)
 
 Open your terminal and run this command:
 
 ```bash
 git clone https://github.com/codesbysuman/alprust.git ~/alprust && cd ~/alprust && bash install.sh
-
 ```
 
 ---

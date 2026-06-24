@@ -17,6 +17,10 @@ param (
     [string[]]$PassthroughFlags
 )
 
+# Enforce UTF-8 encoding for console output and command piping
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 $Verbose = $PSBoundParameters.ContainsKey('Verbose')
 
 # Unicode emoji definitions using character codes for system encoding/locale immunity
@@ -223,7 +227,8 @@ if ($IPv4) {
     $runArgs += @("--sysctl", "net.ipv6.conf.all.disable_ipv6=1")
 }
 
-$buildArgs += @("--build-arg", "CARGO_FLAGS=$cargoFlagsStr")
+$cacheBypass = [Guid]::NewGuid().Guid
+$buildArgs += @("--build-arg", "CARGO_FLAGS=$cargoFlagsStr", "--build-arg", "CACHE_BYPASS=$cacheBypass")
 if ($Refresh) {
     Show-Header "Atomic refresh triggered. Scanning upstream for newer package variations..." "Yellow"
     $buildArgs += @("--build-arg", "REFRESH_CACHE=true")
@@ -245,8 +250,10 @@ $cacheHeader = @"
 FROM rust:$rustVersion AS base
 ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
+ARG CACHE_BYPASS
 WORKDIR /app
 COPY . .
+RUN echo `$CACHE_BYPASS > /dev/null
 RUN $cacheMounts \
     if [ "`$REFRESH_CACHE" = "true" ]; then cargo update; fi
 "@
@@ -304,9 +311,7 @@ function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
         $exitCode = Receive-Job -Job $job
         
         if ($exitCode -ne 0) {
-            Write-Host "`n=======================================================" -ForegroundColor Red
-            Write-Host " $EmojiFire BUILD FAILURE DETECTED INSIDE THE CONTAINER" -ForegroundColor Red
-            Write-Host "=======================================================" -ForegroundColor Red
+            Write-Host "[alprust] $EmojiFire Build failure detected inside the container" -ForegroundColor Red
             
             $logLines = @()
             if (Test-Path $tempErr) { $logLines += Get-Content $tempErr }
@@ -335,7 +340,7 @@ function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
                 }
 
                 # Filter out structural Docker steps and BuildKit metadata
-                if ($cleanLine -match '^\[builder \d+/\d+\]') { continue }
+                if ($cleanLine -match '^\[[a-zA-Z0-9_-]+ \d+/\d+\]') { continue }
                 if ($cleanLine -match '^\[internal\]') { continue }
                 if ($cleanLine -match '^(DONE|CACHED|resolve|transferring|exporting|ERROR:)\s*') { continue }
                 
@@ -468,8 +473,10 @@ FROM rust:$rustVersion AS builder
 ARG BIN_NAME
 ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
+ARG CACHE_BYPASS
 WORKDIR /app
 COPY . .
+RUN echo `$CACHE_BYPASS > /dev/null
 RUN $cacheMounts \
     if [ "`$REFRESH_CACHE" = "true" ]; then cargo update; fi
 RUN $cacheMounts \
