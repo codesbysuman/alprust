@@ -130,12 +130,36 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+get_package_val() {
+    local target_key="$1"
+    local in_package=false
+    while IFS= read -r line || [ -n "$line" ]; do
+        line=$(echo "$line" | xargs 2>/dev/null)
+        [[ "$line" =~ ^# ]] && continue
+        if [[ "$line" =~ ^\[([^]]+)\]$ ]]; then
+            if [ "${BASH_REMATCH[1]}" = "package" ]; then
+                in_package=true
+            else
+                in_package=false
+            fi
+            continue
+        fi
+        if [ "$in_package" = true ]; then
+            if [[ "$line" =~ ^${target_key}[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'] ]]; then
+                echo "${BASH_REMATCH[1]}"
+                return 0
+            fi
+        fi
+    done < Cargo.toml
+    return 1
+}
+
 if [ ! -f "Cargo.toml" ]; then
     echo -e "\033[31m[Error] No Cargo.toml discovered. Ensure your execution path matches a Rust root directory!\033[0m" >&2
     exit 1
 fi
 
-binaryName=$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -m 1 '^[[:space:]]*name[[:space:]]*=' | sed -E "s/^[[:space:]]*name[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/")
+binaryName=$(get_package_val "name")
 if [ -z "$binaryName" ]; then
     echo -e "\033[31m[Error] Unable to isolate package structural definitions inside Cargo.toml.\033[0m" >&2
     exit 1
@@ -144,7 +168,7 @@ fi
 echo -e "\033[90mTarget Workspace Detected: \033[0m\033[33m$binaryName\033[0m"
 
 rustVersion="alpine"
-parsed_ver=$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -m 1 '^[[:space:]]*rust-version[[:space:]]*=' | sed -E "s/^[[:space:]]*rust-version[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/")
+parsed_ver=$(get_package_val "rust-version")
 if [ ! -z "$parsed_ver" ]; then
     rustVersion="${parsed_ver}-alpine"
     echo -e "\033[90mTargeting Rust Version: \033[0m\033[33m$parsed_ver\033[0m"
@@ -180,9 +204,36 @@ done
 
 cargoFlagsStr="${passthroughFlags[*]}"
 
+# Sanitize Cargo flags to prevent shell injection inside the container
+if [[ "$cargoFlagsStr" =~ [;\&\|$\`><\r\n] ]]; then
+    echo -e "\033[31m[Error] Invalid/dangerous characters detected in Cargo flags.\033[0m" >&2
+    exit 1
+fi
+
+is_port_busy() {
+    local check_port="$1"
+    if command -v nc >/dev/null 2>&1; then
+        nc -z -w 1 127.0.0.1 "$check_port" >/dev/null 2>&1
+        return $?
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -i :"$check_port" >/dev/null 2>&1
+        return $?
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        ss -tuln | grep -q -E "[:.]$check_port([[:space:]]|$)"
+        return $?
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -an | grep -q -E "[:.]$check_port([[:space:]]|$)"
+        return $?
+    fi
+    return 1
+}
+
 if [ "$port" -gt 0 ] && [ "$action" == "run" ]; then
     originalPort=$port
-    while (echo > /dev/tcp/127.0.0.1/$port) >/dev/null 2>&1; do
+    while is_port_busy "$port"; do
         port=$((port + 1))
     done
     if [ "$port" -ne "$originalPort" ]; then
@@ -343,7 +394,7 @@ setup_docker_ignore() {
         mv -f "$docker_ignore_backup" "$docker_ignore_path"
     fi
 
-    exclusions="\n# alprust temporary exclusions\ntarget\ndist\n.git\n.alprust.*.tmp\n"
+    exclusions="\n# alprust temporary exclusions\ntarget\ndist\n.git\n.alprust.*.tmp\n.env*\n*.pem\n*.key\n*.der\n*.pfx\n*.p12\nnode_modules\n.idea\n.vscode\n*.sln\n*.sln.docstate\n*.suo\n*.tmp\n*.log\n*.zip\n*.tar.gz\n"
     if [ -f "$docker_ignore_path" ]; then
         has_docker_ignore=true
         cp -f "$docker_ignore_path" "$docker_ignore_backup"
@@ -406,7 +457,7 @@ COPY . .
 RUN echo \$CACHE_BYPASS > /dev/null
 RUN $cacheMounts if [ "\$REFRESH_CACHE" = "true" ]; then cargo update; fi
 RUN $cacheMounts cargo test \$CARGO_FLAGS
-RUN $cacheMounts cargo build --release \$CARGO_FLAGS && (cp /app/target/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null)
+RUN $cacheMounts cargo build --release \$CARGO_FLAGS && find /app/target -type f -name "\$BIN_NAME" -path "*/release/*" -exec cp {} /app/\$BIN_NAME \; -quit
 
 FROM scratch
 ARG BIN_NAME

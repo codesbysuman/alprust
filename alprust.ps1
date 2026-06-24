@@ -160,14 +160,46 @@ try {
     Exit 1
 }
 
+function Get-PackageVal ($targetKey) {
+    if (-not (Test-Path "Cargo.toml")) { return $null }
+    $inPackage = $false
+    foreach ($line in (Get-Content "Cargo.toml")) {
+        $trimmed = $line.Trim()
+        if ($trimmed.StartsWith("#") -or [string]::IsNullOrEmpty($trimmed)) { continue }
+        
+        if ($trimmed.StartsWith("[") -and $trimmed.EndsWith("]")) {
+            $section = $trimmed.Substring(1, $trimmed.Length - 2).Trim()
+            if ($section -eq "package") {
+                $inPackage = $true
+            } else {
+                $inPackage = $false
+            }
+            continue
+        }
+        
+        if ($inPackage) {
+            if ($trimmed -match "^$targetKey\s*=") {
+                $parts = $trimmed -split "=", 2
+                if ($parts.Count -eq 2) {
+                    $val = $parts[1].Trim()
+                    if (($val.StartsWith('"') -and $val.EndsWith('"')) -or ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+                        return $val.Substring(1, $val.Length - 2)
+                    }
+                    return $val
+                }
+            }
+        }
+    }
+    return $null
+}
+
 if (-not (Test-Path "Cargo.toml")) {
     Write-Host "[Error] No Cargo.toml discovered. Ensure your shell paths match a Rust root directory!" -ForegroundColor Red
     Exit 1
 }
 
-$cargoContent = Get-Content "Cargo.toml" -Raw
-if ($cargoContent -match '(?ms)^\[package\].*?^name\s*=\s*["'']([^"'']+)["'']') {
-    $binaryName = $Matches[1]
+$binaryName = Get-PackageVal "name"
+if ($null -ne $binaryName) {
     Write-Host "`nTarget Workspace Detected: " -NoNewline -ForegroundColor Gray
     Write-Host $binaryName -ForegroundColor Yellow
 } else {
@@ -176,10 +208,11 @@ if ($cargoContent -match '(?ms)^\[package\].*?^name\s*=\s*["'']([^"'']+)["'']') 
 }
 
 $rustVersion = "alpine"
-if ($cargoContent -match '(?ms)^\[package\].*?^rust-version\s*=\s*["'']([^"'']+)["'']') {
-    $rustVersion = "$($Matches[1])-alpine"
+$parsed_ver = Get-PackageVal "rust-version"
+if ($null -ne $parsed_ver) {
+    $rustVersion = "$parsed_ver-alpine"
     Write-Host "Targeting Rust Version: " -NoNewline -ForegroundColor Gray
-    Write-Host $Matches[1] -ForegroundColor Yellow
+    Write-Host $parsed_ver -ForegroundColor Yellow
 }
 
 function Test-PortBusy ([int]$PortNumber) {
@@ -208,6 +241,12 @@ if ($Port -gt 0 -and $Action -eq "run") {
 }
 
 $cargoFlagsStr = if ($PassthroughFlags) { $PassthroughFlags -join " " } else { "" }
+
+# Sanitize Cargo flags to prevent shell injection inside the container
+if ($cargoFlagsStr -match '[;\&\|$\`><\r\n]') {
+    Write-Host "[Error] Invalid/dangerous characters detected in Cargo flags." -ForegroundColor Red
+    Exit 1
+}
 
 # Configure BuildKit streaming modes. We always use "plain" to capture detailed compiler logs in the background,
 # but we control the visibility dynamically depending on verbosity settings.
@@ -416,7 +455,7 @@ $hasDockerIgnore = Test-Path $dockerIgnorePath
 $scriptExitCode = 0
 
 try {
-    $exclusions = "`n# alprust temporary exclusions`ntarget`ndist`n.git`n.alprust.*.tmp`n"
+    $exclusions = "`n# alprust temporary exclusions`ntarget`ndist`n.git`n.alprust.*.tmp`n.env*`n*.pem`n*.key`n*.der`n*.pfx`n*.p12`nnode_modules`n.idea`n.vscode`n*.sln`n*.sln.docstate`n*.suo`n*.tmp`n*.log`n*.zip`n*.tar.gz`n"
     if ($hasDockerIgnore) {
         # Copy original file to backup
         Copy-Item $dockerIgnorePath $dockerIgnoreBackup -Force
@@ -483,7 +522,7 @@ RUN $cacheMounts \
     cargo test `$CARGO_FLAGS
 RUN $cacheMounts \
     cargo build --release `$CARGO_FLAGS && \
-    (cp /app/target/release/`$BIN_NAME /app/`$BIN_NAME 2>/dev/null || cp /app/target/*/release/`$BIN_NAME /app/`$BIN_NAME 2>/dev/null || cp /app/target/*/*/release/`$BIN_NAME /app/`$BIN_NAME 2>/dev/null)
+    find /app/target -type f -name "`$BIN_NAME" -path "*/release/*" -exec cp {} /app/`$BIN_NAME \; -quit
 
 FROM scratch
 ARG BIN_NAME
