@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param (
     [Parameter(Position=0)]
-    [ValidateSet("run", "check", "test", "build", "update", "init", "help", "clean")]
+    [ValidateSet("run", "check", "test", "build", "self-update", "init", "help", "clean")]
     [string]$Action = "run",
     
     [switch]$Offline,
     [switch]$IPv4,
     [switch]$Refresh,
+    [switch]$All,
     
     [ValidateRange(0, 65535)]
     [int]$Port = 0,
@@ -50,7 +51,7 @@ Subcommands:
   clean     Clear target compilation cache for the current workspace
   build     Compile and export optimized static musl binaries
   run       (Default) Build, test, and instantly execute inside sandbox
-  update    Pull the latest engine upgrades natively from GitHub
+  self-update Pull the latest engine upgrades natively from GitHub
   help      Display this unified architecture help documentation
 
 Core Tool Modifiers & Flags:
@@ -65,7 +66,7 @@ Core Tool Modifiers & Flags:
     Exit
 }
 
-if ($Action -eq "update") {
+if ($Action -eq "self-update") {
     Show-Header "Updating engine source files from GitHub..." "Cyan"
     git -C $PSScriptRoot pull
     Exit
@@ -204,8 +205,9 @@ if ($Port -gt 0 -and $Action -eq "run") {
 
 $cargoFlagsStr = if ($PassthroughFlags) { $PassthroughFlags -join " " } else { "" }
 
-# Configure BuildKit streaming modes based on verbosity preferences
-$progressMode = if ($Verbose) { "plain" } else { "quiet" }
+# Configure BuildKit streaming modes. We always use "plain" to capture detailed compiler logs in the background,
+# but we control the visibility dynamically depending on verbosity settings.
+$progressMode = "plain"
 $buildArgs = @("--progress=$progressMode") 
 $runArgs = @()
 
@@ -229,24 +231,33 @@ if ($Refresh) {
     $buildArgs += @("--build-arg", "REFRESH_CACHE=false")
 }
 
+$cacheMounts = @(
+    "--mount=type=cache,id=alprust-target-$binaryName,target=/app/target"
+    "--mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db"
+    "--mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache"
+    "--mount=type=cache,id=alprust-registry-index,target=/usr/local/cargo/registry/index"
+    "--mount=type=cache,id=alprust-registry-src,target=/usr/local/cargo/registry/src"
+    "--mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db"
+    "--mount=type=cache,id=alprust-git-checkouts,target=/usr/local/cargo/git/checkouts"
+) -join " \`n    "
+
 $cacheHeader = @"
 FROM rust:$rustVersion AS base
 ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
 WORKDIR /app
 COPY . .
-RUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target \
-    --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+RUN $cacheMounts \
     if [ "`$REFRESH_CACHE" = "true" ]; then cargo update; fi
 "@
 
 # --- CORE IN-MEMORY STREAM EXECUTION FUNCTION WITH TIME TICKERS ---
 function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
-    $tempDockerfile = Join-Path $PWD ".alprust.Dockerfile.tmp"
-    $tempOut = Join-Path $PWD ".alprust.stdout.tmp"
-    $tempErr = Join-Path $PWD ".alprust.stderr.tmp"
+    $tempDir = [System.IO.Path]::GetTempPath()
+    $tempId = [Guid]::NewGuid().Guid
+    $tempDockerfile = Join-Path $tempDir "alprust_dockerfile_$tempId.tmp"
+    $tempOut = Join-Path $tempDir "alprust_stdout_$tempId.tmp"
+    $tempErr = Join-Path $tempDir "alprust_stderr_$tempId.tmp"
     
     # Write Dockerfile content to temp file
     $DockerfileContent | Out-File $tempDockerfile -Encoding utf8 -Force
@@ -255,20 +266,34 @@ function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
     if (Test-Path $tempOut) { Remove-Item $tempOut -Force }
     if (Test-Path $tempErr) { Remove-Item $tempErr -Force }
     
-    $dockerArgs = @("build", "-f", $tempDockerfile) + $Arguments
-    
+    # Format arguments as a single string for cmd.exe
+    $escapedArgs = $Arguments | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '`"' + $_.Replace('"', '\"') + '`"'
+        } else {
+            $_
+        }
+    }
+    $dockerArgsStr = $escapedArgs -join " "
+    $dockerCmd = "build -f `"$tempDockerfile`" $dockerArgsStr"
+
     if ($Verbose) {
-        $proc = Start-Process -FilePath "docker" -ArgumentList $dockerArgs -NoNewWindow -PassThru -Wait
-        return $proc.ExitCode
+        & cmd /c "docker $dockerCmd"
+        return $LASTEXITCODE
     }
 
-    $proc = $null
+    $job = $null
     try {
-        $proc = Start-Process -FilePath "docker" -ArgumentList $dockerArgs -NoNewWindow -PassThru `
-            -RedirectStandardOutput $tempOut -RedirectStandardError $tempErr
+        $workspacePath = $PWD.Path
+        $job = Start-Job -ScriptBlock {
+            param($dockerCmd, $tempOut, $tempErr, $workspacePath)
+            Set-Location $workspacePath
+            & cmd /c "docker $dockerCmd > `"$tempOut`" 2> `"$tempErr`""
+            return $LASTEXITCODE
+        } -ArgumentList $dockerCmd, $tempOut, $tempErr, $workspacePath
             
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        while (-not $proc.HasExited) {
+        while ($job.State -eq "Running") {
             $elapsed = [string]::Format("{0:d2}s", [int][Math]::Floor($sw.Elapsed.TotalSeconds))
             Write-Host "`r[alprust] Processing compilation asset layers... ($elapsed)" -NoNewline -ForegroundColor Cyan
             Start-Sleep -Milliseconds 100
@@ -276,20 +301,84 @@ function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
         $sw.Stop()
         Write-Host "`r[alprust] Processing compilation asset layers... Done!       " -ForegroundColor Cyan
         
-        $exitCode = $proc.ExitCode
+        $exitCode = Receive-Job -Job $job
         
         if ($exitCode -ne 0) {
             Write-Host "`n=======================================================" -ForegroundColor Red
             Write-Host " $EmojiFire BUILD FAILURE DETECTED INSIDE THE CONTAINER" -ForegroundColor Red
             Write-Host "=======================================================" -ForegroundColor Red
             
-            if (Test-Path $tempErr) {
-                $err = Get-Content $tempErr -Raw -ErrorAction SilentlyContinue
-                if (-not [string]::IsNullOrWhiteSpace($err)) { Write-Host $err -ForegroundColor DarkRed }
+            $logLines = @()
+            if (Test-Path $tempErr) { $logLines += Get-Content $tempErr }
+            if (Test-Path $tempOut) { $logLines += Get-Content $tempOut }
+
+            $filteredLines = @()
+            $inFooter = $false
+            foreach ($line in $logLines) {
+                # Stop parsing once we hit the BuildKit failure footer demarcation
+                if ($line -match '^------+$' -or $line -match '^ > \[builder') {
+                    $inFooter = $true
+                }
+                if ($inFooter) { continue }
+
+                # Skip standard Docker/BuildKit setup noise
+                if ($line -match '^#0 building with') { continue }
+                if ($line -match 'docker-desktop://' -or $line -match 'View build details:') { continue }
+                if ($line -match 'alprust_dockerfile_.*\.tmp:\d+') { continue }
+                
+                # Strip BuildKit prefix: e.g. "#9 0.693    Compiling..." or "#9 ..."
+                $cleanLine = $line
+                if ($line -match '^#\d+\s+[\d.]+\s+(.*)$') {
+                    $cleanLine = $Matches[1]
+                } elseif ($line -match '^#\d+\s+(.*)$') {
+                    $cleanLine = $Matches[1]
+                }
+
+                # Filter out structural Docker steps and BuildKit metadata
+                if ($cleanLine -match '^\[builder \d+/\d+\]') { continue }
+                if ($cleanLine -match '^\[internal\]') { continue }
+                if ($cleanLine -match '^(DONE|CACHED|resolve|transferring|exporting|ERROR:)\s*') { continue }
+                
+                $filteredLines += $cleanLine
             }
-            if (Test-Path $tempOut) {
-                $out = Get-Content $tempOut -Raw -ErrorAction SilentlyContinue
-                if (-not [string]::IsNullOrWhiteSpace($out)) { Write-Host $out -ForegroundColor Gray }
+            # Trim leading empty lines
+            $startIndex = 0
+            while ($startIndex -lt $filteredLines.Count -and [string]::IsNullOrWhiteSpace($filteredLines[$startIndex])) {
+                $startIndex++
+            }
+            
+            # Trim trailing empty lines
+            $endIndex = $filteredLines.Count - 1
+            while ($endIndex -ge $startIndex -and [string]::IsNullOrWhiteSpace($filteredLines[$endIndex])) {
+                $endIndex--
+            }
+
+            $trimmedLines = @()
+            if ($startIndex -le $endIndex) {
+                $trimmedLines = $filteredLines[$startIndex..$endIndex]
+            }
+
+            if ($trimmedLines.Count -gt 0) {
+                Write-Host "`n[Compiler Output]:" -ForegroundColor Yellow
+                foreach ($fLine in $trimmedLines) {
+                    if ($fLine -match '^error(\[|:)') {
+                        Write-Host $fLine -ForegroundColor Red
+                    } elseif ($fLine -match '^warning(\[|:)') {
+                        Write-Host $fLine -ForegroundColor Yellow
+                    } elseif ($fLine -match '^note(\[|:)') {
+                        Write-Host $fLine -ForegroundColor Cyan
+                    } else {
+                        Write-Host $fLine -ForegroundColor Gray
+                    }
+                }
+            } else {
+                # Fallback to cleaning and printing raw logs if no compiler errors parsed
+                Write-Host "`nRaw execution log:" -ForegroundColor Yellow
+                foreach ($line in $logLines) {
+                    if ($line -notmatch 'docker-desktop://|View build details:|alprust_dockerfile_.*\.tmp:\d+') {
+                        Write-Host $line -ForegroundColor DarkRed
+                    }
+                }
             }
         }
         return $exitCode
@@ -297,8 +386,8 @@ function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
         Write-Host "`n[Error] Failed to execute docker process: $_" -ForegroundColor Red
         return 1
     } finally {
-        if ($null -ne $proc -and -not $proc.HasExited) {
-            try { $proc.Kill() } catch {}
+        if ($null -ne $job) {
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path $tempDockerfile) { Remove-Item $tempDockerfile -Force }
         if (Test-Path $tempOut) { Remove-Item $tempOut -Force }
@@ -308,18 +397,28 @@ function Execute-BuildWithTicker ($DockerfileContent, $Arguments) {
 
 # Manage temporary .dockerignore setup
 $dockerIgnorePath = Join-Path $PWD ".dockerignore"
+$dockerIgnoreBackup = Join-Path $PWD ".dockerignore.alprust.bak"
+
+# Recover from previous crashed run if backup exists
+if (Test-Path $dockerIgnoreBackup) {
+    if (Test-Path $dockerIgnorePath) {
+        Remove-Item $dockerIgnorePath -Force -ErrorAction SilentlyContinue
+    }
+    Move-Item $dockerIgnoreBackup $dockerIgnorePath -Force -ErrorAction SilentlyContinue
+}
+
 $hasDockerIgnore = Test-Path $dockerIgnorePath
-$originalIgnoreContent = $null
+$scriptExitCode = 0
 
 try {
-    # Set up temporary .dockerignore to optimize Docker build context size
+    $exclusions = "`n# alprust temporary exclusions`ntarget`ndist`n.git`n.alprust.*.tmp`n"
     if ($hasDockerIgnore) {
-        $originalIgnoreContent = Get-Content $dockerIgnorePath -Raw
-        $additionalIgnore = "`n# alprust temporary exclusions`ntarget`ndist`n.git`n.alprust.*.tmp`n"
-        Add-Content $dockerIgnorePath $additionalIgnore -ErrorAction SilentlyContinue
+        # Copy original file to backup
+        Copy-Item $dockerIgnorePath $dockerIgnoreBackup -Force
+        # Append exclusions
+        Add-Content $dockerIgnorePath $exclusions -ErrorAction SilentlyContinue
     } else {
-        $tempIgnore = "# alprust temporary exclusions`ntarget`ndist`n.git`n.alprust.*.tmp`n"
-        $tempIgnore | Out-File $dockerIgnorePath -Encoding utf8 -Force
+        $exclusions | Out-File $dockerIgnorePath -Encoding utf8 -Force
     }
 
     switch ($Action) {
@@ -327,44 +426,41 @@ try {
             Show-Header "Running syntax and type validation sweeps..." "Cyan"
             $dockerfileContent = @"
 $cacheHeader
-RUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target \
-    --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+RUN $cacheMounts \
     cargo check `$CARGO_FLAGS
 "@
             $code = Execute-BuildWithTicker $dockerfileContent ($buildArgs + @("."))
-            if ($code -eq 0) { Show-Header "Syntax verification passed cleanly!" "Green" } else { Exit $code }
+            if ($code -eq 0) { Show-Header "Syntax verification passed cleanly!" "Green" } else { $scriptExitCode = $code; return }
         }
         "test" {
             Show-Header "Running internal unit and integration tests..." "Cyan"
             $dockerfileContent = @"
 $cacheHeader
-RUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target \
-    --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+RUN $cacheMounts \
     cargo test `$CARGO_FLAGS
 "@
             $code = Execute-BuildWithTicker $dockerfileContent ($buildArgs + @("."))
-            if ($code -eq 0) { Show-Header "All tests passed flawlessly!" "Green" } else { Exit $code }
+            if ($code -eq 0) { Show-Header "All tests passed flawlessly!" "Green" } else { $scriptExitCode = $code; return }
         }
         "clean" {
+            if ($All) {
+                Show-Header "Pruning all system-wide BuildKit cache mounts..." "Yellow"
+                docker builder prune --filter type=exec.cachemount -f
+                $scriptExitCode = 0
+                return
+            }
             Show-Header "Clearing target compilation cache for $binaryName..." "Cyan"
             $dockerfileContent = @"
 FROM rust:$rustVersion
 ARG BIN_NAME
 WORKDIR /app
-COPY Cargo.toml .
-RUN --mount=type=cache,id=alprust-target-`$BIN_NAME,target=/app/target \
-    --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+COPY . .
+RUN $cacheMounts \
     cargo clean
 "@
             $cleanArgs = $buildArgs + @("--build-arg", "BIN_NAME=$binaryName", ".")
             $code = Execute-BuildWithTicker $dockerfileContent $cleanArgs
-            if ($code -eq 0) { Show-Header "Compilation cache cleared cleanly!" "Green" } else { Exit $code }
+            if ($code -eq 0) { Show-Header "Compilation cache cleared cleanly!" "Green" } else { $scriptExitCode = $code; return }
         }
         Default {
             $dockerfileContent = @"
@@ -374,20 +470,11 @@ ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
 WORKDIR /app
 COPY . .
-RUN --mount=type=cache,id=alprust-target-`$BIN_NAME,target=/app/target \
-    --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+RUN $cacheMounts \
     if [ "`$REFRESH_CACHE" = "true" ]; then cargo update; fi
-RUN --mount=type=cache,id=alprust-target-`$BIN_NAME,target=/app/target \
-    --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+RUN $cacheMounts \
     cargo test `$CARGO_FLAGS
-RUN --mount=type=cache,id=alprust-target-`$BIN_NAME,target=/app/target \
-    --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db \
-    --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache \
-    --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db \
+RUN $cacheMounts \
     cargo build --release `$CARGO_FLAGS && \
     (cp /app/target/release/`$BIN_NAME /app/`$BIN_NAME 2>/dev/null || cp /app/target/*/release/`$BIN_NAME /app/`$BIN_NAME 2>/dev/null || cp /app/target/*/*/release/`$BIN_NAME /app/`$BIN_NAME 2>/dev/null)
 
@@ -395,46 +482,59 @@ FROM scratch
 ARG BIN_NAME
 COPY --from=builder /app/`$BIN_NAME /
 "@
-            $runBuildArgs = $buildArgs + @("--build-arg", "BIN_NAME=$binaryName", "-o", "./dist", ".")
+            $tempDistDir = "./.alprust.dist.tmp"
+            if (Test-Path $tempDistDir) { Remove-Item $tempDistDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+            $runBuildArgs = $buildArgs + @("--build-arg", "BIN_NAME=$binaryName", "-o", $tempDistDir, ".")
             
             Show-Header "Compiling static Alpine production binary asset pipeline..." "Cyan"
-            if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
             
             $code = Execute-BuildWithTicker $dockerfileContent $runBuildArgs
             
-            if ($code -eq 0 -and $Action -eq "run") {
-                Show-Header "Static cross-compilation pipeline executed flawlessly!" "Green"
-                Show-Header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "Cyan"
+            if ($code -eq 0) {
+                # Only replace the user's dist directory once compilation succeeds
+                if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
+                Move-Item $tempDistDir "dist" -Force
                 
-                $hostOutputDir = (Get-Item .\dist).FullName
-                $runArgs += @("--rm", "-it", "--init")
-                
-                if ($Port -gt 0) {
-                    Write-Host "`n-------------------------------------------------------" -ForegroundColor Gray
-                    Write-Host " $EmojiFinger Host OS Access URL:     http://localhost:$Port" -ForegroundColor Green
-                    Write-Host " $EmojiFinger Isolated Container URL: http://0.0.0.0:$Port" -ForegroundColor Yellow
-                    Write-Host "-------------------------------------------------------`n" -ForegroundColor Gray
-                    $runArgs += @("-p", "${Port}:${Port}", "-e", "PORT=$Port")
+                if ($Action -eq "run") {
+                    Show-Header "Static cross-compilation pipeline executed flawlessly!" "Green"
+                    Show-Header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "Cyan"
+                    
+                    $hostOutputDir = (Get-Item .\dist).FullName
+                    $runArgs += @("--rm", "-it", "--init")
+                    
+                    if ($Port -gt 0) {
+                        Write-Host "-------------------------------------------------------" -ForegroundColor Gray
+                        Write-Host " $EmojiFinger Host OS Access URL:     http://localhost:$Port" -ForegroundColor Green
+                        Write-Host " $EmojiFinger Isolated Container URL: http://0.0.0.0:$Port" -ForegroundColor Yellow
+                        Write-Host "-------------------------------------------------------`n" -ForegroundColor Gray
+                        $runArgs += @("-p", "${Port}:${Port}", "-e", "PORT=$Port")
+                    }
+                    
+                    $runArgs += @("-v", "${hostOutputDir}:/app", "alpine", "/app/$binaryName")
+                    docker run @runArgs
+                } else {
+                    Show-Header "Static standalone binary extracted cleanly to ./dist/$binaryName" "Green"
                 }
-                
-                $runArgs += @("-v", "${hostOutputDir}:/app", "alpine", "/app/$binaryName")
-                docker run @runArgs
-            } elseif ($code -eq 0) {
-                Show-Header "Static standalone binary extracted cleanly to ./dist/$binaryName" "Green"
             } else {
-                Exit $code
+                $scriptExitCode = $code
+                return
             }
         }
     }
 } finally {
     # Restore or clean up temporary .dockerignore file
-    if ($hasDockerIgnore) {
-        if ($null -ne $originalIgnoreContent) {
-            $originalIgnoreContent | Out-File $dockerIgnorePath -Encoding utf8 -Force
-        }
-    } else {
-        if (Test-Path $dockerIgnorePath) {
-            Remove-Item $dockerIgnorePath -Force
-        }
+    if (Test-Path $dockerIgnoreBackup) {
+        Move-Item $dockerIgnoreBackup $dockerIgnorePath -Force -ErrorAction SilentlyContinue
+    } elseif (-not $hasDockerIgnore -and (Test-Path $dockerIgnorePath)) {
+        Remove-Item $dockerIgnorePath -Force -ErrorAction SilentlyContinue
+    }
+    
+    # Clean up temporary dist folder if it remains
+    $tempDistPath = Join-Path $PWD ".alprust.dist.tmp"
+    if (Test-Path $tempDistPath) {
+        Remove-Item $tempDistPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+Exit $scriptExitCode

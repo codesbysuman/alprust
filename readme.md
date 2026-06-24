@@ -69,7 +69,7 @@ git clone https://github.com/codesbysuman/alprust.git ~/alprust && cd ~/alprust 
 You can update `alprust` directly from your terminal at any time. The tool targets its own source directory to pull changes from GitHub without altering your terminal's current working directory (`cwd`):
 
 ```bash
-alprust update
+alprust self-update
 
 ```
 
@@ -131,13 +131,20 @@ alprust build
 
 ```
 
-### 6. Cache Cleaning
+### 6. Cache Cleaning & Storage Pruning
 
-Clears the target compilation cache specifically for the current workspace inside Docker (running a containerized `cargo clean` with the compiler target cache mounted):
+Clears target compilation caches or prunes overall BuildKit storage:
 
-```bash
-alprust clean
-```
+* **Workspace Target Clean**: Clears the target compilation cache specifically for the current workspace inside Docker (running a containerized `cargo clean` with the target cache mounted):
+  ```bash
+  alprust clean
+  ```
+* **System-wide Storage Pruning**: Safely prunes all system-wide compiler/dependency cache mounts across all workspaces to free up disk space:
+  ```bash
+  alprust clean --all    # On macOS/Linux
+  alprust clean -all     # On Windows (PowerShell)
+  ```
+
 
 ### 7. Continuous Dev Loop (Default Action)
 

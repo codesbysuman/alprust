@@ -13,7 +13,7 @@ show_header() {
 }
 
 action="run"
-if [[ "$1" =~ ^(run|check|test|clean|build|update|init|help)$ ]]; then
+if [[ "$1" =~ ^(run|check|test|clean|build|self-update|init|help)$ ]]; then
     action="$1"
     shift
 fi
@@ -36,7 +36,7 @@ Subcommands:
   clean     Clear target compilation cache for the current workspace
   build     Compile and export optimized static musl binaries
   run       (Default) Build, test, and instantly execute inside sandbox
-  update    Pull the latest engine upgrades natively from GitHub
+  self-update Pull the latest engine upgrades natively from GitHub
   help      Display this unified architecture help documentation
 
 Core Tool Modifiers & Flags:
@@ -51,7 +51,7 @@ EOF
     exit 0
 fi
 
-if [ "$action" == "update" ]; then
+if [ "$action" == "self-update" ]; then
     show_header "Updating engine source files from GitHub..." "cyan"
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
     git -C "$SCRIPT_DIR" pull
@@ -154,6 +154,7 @@ offline=false
 ipv4=false
 refresh=false
 verbose=false
+all=false
 port=0
 passthroughFlags=()
 
@@ -163,6 +164,7 @@ while [[ $# -gt 0 ]]; do
         -ipv4|--ipv4)       ipv4=true; shift ;;
         -refresh|--refresh) refresh=true; shift ;;
         -verbose|--verbose) verbose=true; shift ;;
+        -all|--all)         all=true; shift ;;
         -port|--port)       
             if [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -ge 0 ] && [ "$2" -le 65535 ]; then
                 port="$2"
@@ -188,11 +190,9 @@ if [ "$port" -gt 0 ] && [ "$action" == "run" ]; then
     fi
 fi
 
-if [ "$verbose" = true ]; then
-    buildArgs=("--progress=plain")
-else
-    buildArgs=("--progress=quiet")
-fi
+# Configure BuildKit streaming modes. We always use "plain" to capture detailed compiler logs in the background,
+# but we control the visibility dynamically depending on verbosity settings.
+buildArgs=("--progress=plain")
 runArgs=()
 
 if [ "$offline" = true ]; then
@@ -215,7 +215,9 @@ else
     buildArgs+=("--build-arg" "REFRESH_CACHE=false")
 fi
 
-cacheHeader="FROM rust:$rustVersion AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nWORKDIR /app\nCOPY . .\nRUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ \"\$REFRESH_CACHE\" = \"true\" ]; then cargo update; fi"
+cacheMounts="--mount=type=cache,id=alprust-target-$binaryName,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-registry-index,target=/usr/local/cargo/registry/index --mount=type=cache,id=alprust-registry-src,target=/usr/local/cargo/registry/src --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db --mount=type=cache,id=alprust-git-checkouts,target=/usr/local/cargo/git/checkouts"
+
+cacheHeader="FROM rust:$rustVersion AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nWORKDIR /app\nCOPY . .\nRUN $cacheMounts if [ \"\$REFRESH_CACHE\" = \"true\" ]; then cargo update; fi"
 
 execute_build_with_ticker() {
     local df_content="$1"
@@ -244,10 +246,69 @@ execute_build_with_ticker() {
     printf "\r\033[36m[alprust] Processing compilation asset layers... Done!       \033[0m\n"
     
     if [ $status -ne 0 ]; then
-        echo -e "\n\033[31m======================================================="
+        echo -e "\033[31m======================================================="
         echo -e " 🔥 BUILD FAILURE DETECTED INSIDE THE CONTAINER"
         echo -e "=======================================================\033[0m"
-        cat "$log_file"
+        
+        if [ "$verbose" = false ] && [ -f "$log_file" ]; then
+            # Parse and clean output lines
+            has_compiler_output=false
+            compiled_logs=""
+            
+            while IFS= read -r line; do
+                # Skip standard Docker/BuildKit setup noise
+                if [[ "$line" =~ ^#[0-9]+[[:space:]]+(DONE|CACHED|\[internal\]|resolve|transferring|export|FROM|WORKDIR|COPY|RUN|ERROR:|building\ with) ]]; then continue; fi
+                if [[ "$line" =~ ^#[0-9]+[[:space:]]+ERROR: ]]; then continue; fi
+                if [[ "$line" =~ ^#0[[:space:]]+building\ with ]]; then continue; fi
+                # Skip BuildKit error summary footer noise
+                if [[ "$line" =~ ^------+$ ]]; then continue; fi
+                if [[ "$line" =~ ^[[:space:]]*\>[[:space:]]*\[builder ]]; then continue; fi
+                if [[ "$line" =~ ^Dockerfile:[0-9]+ ]]; then continue; fi
+                if [[ "$line" =~ ^[[:space:]]+[0-9]+[[:space:]]+\| ]]; then continue; fi
+                if [[ "$line" =~ ^\>\>\> ]]; then continue; fi
+                if [[ "$line" =~ ^ERROR:[[:space:]]+failed ]]; then continue; fi
+                if [[ "$line" =~ docker-desktop:// ]]; then continue; fi
+                if [[ "$line" =~ View[[:space:]]+build[[:space:]]+details: ]]; then continue; fi
+                
+                # Strip BuildKit prefix: e.g. "#9 0.693    Compiling..." or "#9 ..."
+                clean_line="$line"
+                if [[ "$line" =~ ^#[0-9]+[[:space:]]+[0-9.]+[[:space:]]+(.*)$ ]]; then
+                    clean_line="${BASH_REMATCH[1]}"
+                elif [[ "$line" =~ ^#[0-9]+[[:space:]]+(.*)$ ]]; then
+                    clean_line="${BASH_REMATCH[1]}"
+                fi
+                
+                # Filter out blank lines from compilation output count
+                if [ -n "$(echo "$clean_line" | xargs 2>/dev/null)" ]; then
+                    has_compiler_output=true
+                fi
+                
+                compiled_logs+="$clean_line\n"
+            done < "$log_file"
+            
+            if [ "$has_compiler_output" = true ]; then
+                echo -e "\033[33m[Compiler Output]:\033[0m"
+                echo -e "$compiled_logs" | sed -e '/./,$!d' | while IFS= read -r fLine; do
+                    if [[ "$fLine" =~ ^error(\[|:) ]]; then
+                        echo -e "\033[31m$fLine\033[0m"
+                    elif [[ "$fLine" =~ ^warning(\[|:) ]]; then
+                        echo -e "\033[33m$fLine\033[0m"
+                    elif [[ "$fLine" =~ ^note(\[|:) ]]; then
+                        echo -e "\033[36m$fLine\033[0m"
+                    else
+                        echo -e "\033[90m$fLine\033[0m"
+                    fi
+                done
+            else
+                # Fallback to cleaned raw logs
+                echo -e "\033[33mRaw execution log:\033[0m"
+                grep -Ev "docker-desktop://|View build details:|alprust_dockerfile_|Dockerfile:" "$log_file" | while IFS= read -r rLine; do
+                    echo -e "\033[31m$rLine\033[0m"
+                done
+            fi
+        else
+            grep -Ev "docker-desktop://|View build details:|alprust_dockerfile_|Dockerfile:" "$log_file"
+        fi
     fi
     rm -f "$log_file"
     return $status
@@ -255,28 +316,37 @@ execute_build_with_ticker() {
 
 # Manage temporary .dockerignore setup
 docker_ignore_path="$PWD/.dockerignore"
+docker_ignore_backup="$PWD/.dockerignore.alprust.bak"
+temp_dist_path="$PWD/.alprust.dist.tmp"
 has_docker_ignore=false
-original_ignore_content=""
 
 restore_docker_ignore() {
-    if [ "$has_docker_ignore" = true ]; then
-        if [ ! -z "$original_ignore_content" ]; then
-            echo "$original_ignore_content" > "$docker_ignore_path"
-        else
-            rm -f "$docker_ignore_path"
-        fi
-    else
+    # 1. Restore dockerignore
+    if [ -f "$docker_ignore_backup" ]; then
+        mv -f "$docker_ignore_backup" "$docker_ignore_path"
+    elif [ "$has_docker_ignore" = false ]; then
         rm -f "$docker_ignore_path"
+    fi
+    # 2. Clean up temporary dist path
+    if [ -d "$temp_dist_path" ]; then
+        rm -rf "$temp_dist_path"
     fi
 }
 
 setup_docker_ignore() {
+    # Recover from a previous crashed run
+    if [ -f "$docker_ignore_backup" ]; then
+        mv -f "$docker_ignore_backup" "$docker_ignore_path"
+    fi
+
+    exclusions="\n# alprust temporary exclusions\ntarget\ndist\n.git\n.alprust.*.tmp\n"
     if [ -f "$docker_ignore_path" ]; then
         has_docker_ignore=true
-        original_ignore_content=$(cat "$docker_ignore_path")
-        echo -e "\n# alprust temporary exclusions\ntarget\ndist\n.git\n.alprust.*.tmp\n" >> "$docker_ignore_path"
+        cp -f "$docker_ignore_path" "$docker_ignore_backup"
+        echo -e "$exclusions" >> "$docker_ignore_path"
     else
-        echo -e "# alprust temporary exclusions\ntarget\ndist\n.git\n.alprust.*.tmp\n" > "$docker_ignore_path"
+        has_docker_ignore=false
+        echo -e "$exclusions" > "$docker_ignore_path"
     fi
     trap restore_docker_ignore EXIT INT TERM
 }
@@ -286,7 +356,7 @@ setup_docker_ignore
 if [ "$action" == "check" ]; then
     show_header "Running syntax and type validation sweeps..." "cyan"
     buildArgs+=("-f" "-" ".")
-    df="$cacheHeader\nRUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo check \$CARGO_FLAGS"
+    df="$cacheHeader\nRUN $cacheMounts cargo check \$CARGO_FLAGS"
     execute_build_with_ticker "$df" "${buildArgs[@]}"
     status=$?
     [ $status -eq 0 ] && show_header "Syntax verification passed cleanly!" "green"
@@ -295,16 +365,21 @@ if [ "$action" == "check" ]; then
 elif [ "$action" == "test" ]; then
     show_header "Running internal unit and integration tests..." "cyan"
     buildArgs+=("-f" "-" ".")
-    df="$cacheHeader\nRUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS"
+    df="$cacheHeader\nRUN $cacheMounts cargo test \$CARGO_FLAGS"
     execute_build_with_ticker "$df" "${buildArgs[@]}"
     status=$?
     [ $status -eq 0 ] && show_header "All tests passed flawlessly!" "green"
     exit $status
 
 elif [ "$action" == "clean" ]; then
+    if [ "$all" = true ]; then
+        show_header "Pruning all system-wide BuildKit cache mounts..." "yellow"
+        docker builder prune --filter type=exec.cachemount -f
+        exit 0
+    fi
     show_header "Clearing target compilation cache for $binaryName..." "cyan"
     buildArgs+=("-f" "-" ".")
-    df="FROM rust:$rustVersion\nARG BIN_NAME\nWORKDIR /app\nCOPY Cargo.toml .\nRUN --mount=type=cache,id=alprust-target-\$BIN_NAME,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo clean"
+    df="FROM rust:$rustVersion\nARG BIN_NAME\nWORKDIR /app\nCOPY . .\nRUN $cacheMounts cargo clean"
     buildArgs+=("--build-arg" "BIN_NAME=$binaryName")
     execute_build_with_ticker "$df" "${buildArgs[@]}"
     status=$?
@@ -312,9 +387,9 @@ elif [ "$action" == "clean" ]; then
     exit $status
 
 else
-    buildArgs+=("--build-arg" "BIN_NAME=$binaryName" "-f" "-" "-o" "./dist" ".")
+    rm -rf ./.alprust.dist.tmp
+    buildArgs+=("--build-arg" "BIN_NAME=$binaryName" "-f" "-" "-o" "./.alprust.dist.tmp" ".")
     show_header "Compiling static Alpine production binary asset pipeline..." "cyan"
-    rm -rf ./dist
 
     df=$(cat <<EOF
 FROM rust:$rustVersion AS builder
@@ -323,9 +398,9 @@ ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
 WORKDIR /app
 COPY . .
-RUN --mount=type=cache,id=alprust-target-\$BIN_NAME,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ "\$REFRESH_CACHE" = "true" ]; then cargo update; fi
-RUN --mount=type=cache,id=alprust-target-\$BIN_NAME,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS
-RUN --mount=type=cache,id=alprust-target-\$BIN_NAME,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo build --release \$CARGO_FLAGS && (cp /app/target/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null)
+RUN $cacheMounts if [ "\$REFRESH_CACHE" = "true" ]; then cargo update; fi
+RUN $cacheMounts cargo test \$CARGO_FLAGS
+RUN $cacheMounts cargo build --release \$CARGO_FLAGS && (cp /app/target/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null)
 
 FROM scratch
 ARG BIN_NAME
@@ -336,25 +411,31 @@ EOF
     execute_build_with_ticker "$df" "${buildArgs[@]}"
     status=$?
 
-    if [ $status -eq 0 ] && [ "$action" == "run" ]; then
-        show_header "Static cross-compilation pipeline executed flawlessly!" "green"
-        show_header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "cyan"
+    if [ $status -eq 0 ]; then
+        # Replace the target dist directory only on success
+        rm -rf ./dist
+        mv -f ./.alprust.dist.tmp ./dist
         
-        hostOutputDir=$(pwd)/dist
-        runArgs+=("--rm" "-it" "--init")
-        
-        if [ "$port" -gt 0 ]; then
-            echo -e "\n\033[90m-------------------------------------------------------\033[0m"
-            echo -e " \033[32m👉 Host OS Access URL:     http://localhost:$port\033[0m"
-            echo -e " \033[33m👉 Isolated Container URL: http://0.0.0.0:$port\033[0m"
-            echo -e "\033[90m-------------------------------------------------------\033[0m\n"
-            runArgs+=("-p" "$port:$port" "-e" "PORT=$port")
+        if [ "$action" == "run" ]; then
+            show_header "Static cross-compilation pipeline executed flawlessly!" "green"
+            show_header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "cyan"
+            
+            hostOutputDir=$(pwd)/dist
+            runArgs+=("--rm" "-it" "--init")
+            
+            if [ "$port" -gt 0 ]; then
+                echo -e "\033[90m-------------------------------------------------------\033[0m"
+                echo -e " \033[32m👉 Host OS Access URL:     http://localhost:$port\033[0m"
+                echo -e " \033[33m👉 Isolated Container URL: http://0.0.0.0:$port\033[0m"
+                echo -e "\033[90m-------------------------------------------------------\033[0m\n"
+                runArgs+=("-p" "$port:$port" "-e" "PORT=$port")
+            fi
+            
+            runArgs+=("-v" "$hostOutputDir:/app" "alpine" "/app/$binaryName")
+            docker run "${runArgs[@]}"
+        else
+            show_header "Static standalone binary extracted cleanly to ./dist/$binaryName" "green"
         fi
-        
-        runArgs+=("-v" "$hostOutputDir:/app" "alpine" "/app/$binaryName")
-        docker run "${runArgs[@]}"
-    elif [ $status -eq 0 ]; then
-        show_header "Static standalone binary extracted cleanly to ./dist/$binaryName" "green"
     else
         exit $status
     fi
