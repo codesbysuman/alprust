@@ -13,7 +13,7 @@ show_header() {
 }
 
 action="run"
-if [[ "$1" =~ ^(run|check|test|build|update|init|help)$ ]]; then
+if [[ "$1" =~ ^(run|check|test|clean|build|update|init|help)$ ]]; then
     action="$1"
     shift
 fi
@@ -33,6 +33,7 @@ Subcommands:
   init      Scaffold a brand-new Rust binary workspace from scratch
   check     Verify syntax & type safety using global cached crates
   test      Run the full workspace unit test suite inside Alpine
+  clean     Clear target compilation cache for the current workspace
   build     Compile and export optimized static musl binaries
   run       (Default) Build, test, and instantly execute inside sandbox
   update    Pull the latest engine upgrades natively from GitHub
@@ -61,6 +62,15 @@ if [ "$action" == "init" ]; then
     echo -e "\033[36m\n=========================================="
     echo -e "   alprust Project Scaffolding Engine     "
     echo -e "==========================================\033[0m"
+    
+    if [ -f "Cargo.toml" ]; then
+        read -p "[Warning] Cargo.toml already exists! Overwrite? (y/N): " choice
+        if [[ ! "$choice" =~ ^[yY] ]]; then
+            echo "Scaffolding aborted."
+            exit 0
+        fi
+    fi
+    
     currentFolder=$(basename "$PWD")
     
     read -p "📦 Project Name [Default: $currentFolder]: " name
@@ -69,8 +79,10 @@ if [ "$action" == "init" ]; then
     read -p "🏷️ Version [Default: 0.1.0]: " version
     [ -z "$version" ] && version="0.1.0"
 
-    read -p "🦀 Rust Edition (e.g., 2021, 2024) [Default: 2021]: " edition
-    [ -z "$edition" ] && edition="2021"
+    read -p "🦀 Rust Edition (e.g., 2021, 2024) [Default: 2024]: " edition
+    [ -z "$edition" ] && edition="2024"
+    
+    read -p "Target Rust Version (e.g., 1.80, or press Enter for latest Alpine): " rustVersionInput
     
     read -p "⚙️ Dependencies (comma separated, e.g., tokio@1, serde): " depsInput
     
@@ -89,11 +101,14 @@ if [ "$action" == "init" ]; then
         done
     fi
 
+    packageBlock="[package]\nname = \"$name\"\nversion = \"$version\"\nedition = \"$edition\""
+    if [ ! -z "$rustVersionInput" ]; then
+        trimmedRustVersion=$(echo "$rustVersionInput" | xargs)
+        packageBlock+="\nrust-version = \"$trimmedRustVersion\""
+    fi
+
     cat <<EOF > Cargo.toml
-[package]
-name = "$name"
-version = "$version"
-edition = "$edition"
+$(echo -e "$packageBlock")
 
 [dependencies]
 $(echo -e "$tomlDeps")
@@ -127,6 +142,13 @@ if [ -z "$binaryName" ]; then
 fi
 
 echo -e "\033[90mTarget Workspace Detected: \033[0m\033[33m$binaryName\033[0m"
+
+rustVersion="alpine"
+parsed_ver=$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -m 1 '^[[:space:]]*rust-version[[:space:]]*=' | sed -E "s/^[[:space:]]*rust-version[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/")
+if [ ! -z "$parsed_ver" ]; then
+    rustVersion="${parsed_ver}-alpine"
+    echo -e "\033[90mTargeting Rust Version: \033[0m\033[33m$parsed_ver\033[0m"
+fi
 
 offline=false
 ipv4=false
@@ -193,7 +215,7 @@ else
     buildArgs+=("--build-arg" "REFRESH_CACHE=false")
 fi
 
-cacheHeader="FROM rust:alpine AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nWORKDIR /app\nCOPY . .\nRUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ \"\$REFRESH_CACHE\" = \"true\" ]; then cargo update; fi"
+cacheHeader="FROM rust:$rustVersion AS base\nARG CARGO_FLAGS\nARG REFRESH_CACHE=false\nWORKDIR /app\nCOPY . .\nRUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ \"\$REFRESH_CACHE\" = \"true\" ]; then cargo update; fi"
 
 execute_build_with_ticker() {
     local df_content="$1"
@@ -231,10 +253,40 @@ execute_build_with_ticker() {
     return $status
 }
 
+# Manage temporary .dockerignore setup
+docker_ignore_path="$PWD/.dockerignore"
+has_docker_ignore=false
+original_ignore_content=""
+
+restore_docker_ignore() {
+    if [ "$has_docker_ignore" = true ]; then
+        if [ ! -z "$original_ignore_content" ]; then
+            echo "$original_ignore_content" > "$docker_ignore_path"
+        else
+            rm -f "$docker_ignore_path"
+        fi
+    else
+        rm -f "$docker_ignore_path"
+    fi
+}
+
+setup_docker_ignore() {
+    if [ -f "$docker_ignore_path" ]; then
+        has_docker_ignore=true
+        original_ignore_content=$(cat "$docker_ignore_path")
+        echo -e "\n# alprust temporary exclusions\ntarget\ndist\n.git\n.alprust.*.tmp\n" >> "$docker_ignore_path"
+    else
+        echo -e "# alprust temporary exclusions\ntarget\ndist\n.git\n.alprust.*.tmp\n" > "$docker_ignore_path"
+    fi
+    trap restore_docker_ignore EXIT INT TERM
+}
+
+setup_docker_ignore
+
 if [ "$action" == "check" ]; then
     show_header "Running syntax and type validation sweeps..." "cyan"
     buildArgs+=("-f" "-" ".")
-    df="$cacheHeader\nRUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo check \$CARGO_FLAGS"
+    df="$cacheHeader\nRUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo check \$CARGO_FLAGS"
     execute_build_with_ticker "$df" "${buildArgs[@]}"
     status=$?
     [ $status -eq 0 ] && show_header "Syntax verification passed cleanly!" "green"
@@ -243,31 +295,41 @@ if [ "$action" == "check" ]; then
 elif [ "$action" == "test" ]; then
     show_header "Running internal unit and integration tests..." "cyan"
     buildArgs+=("-f" "-" ".")
-    df="$cacheHeader\nRUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS"
+    df="$cacheHeader\nRUN --mount=type=cache,id=alprust-target-$binaryName,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS"
     execute_build_with_ticker "$df" "${buildArgs[@]}"
     status=$?
     [ $status -eq 0 ] && show_header "All tests passed flawlessly!" "green"
     exit $status
 
+elif [ "$action" == "clean" ]; then
+    show_header "Clearing target compilation cache for $binaryName..." "cyan"
+    buildArgs+=("-f" "-" ".")
+    df="FROM rust:$rustVersion\nARG BIN_NAME\nWORKDIR /app\nCOPY Cargo.toml .\nRUN --mount=type=cache,id=alprust-target-\$BIN_NAME,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo clean"
+    buildArgs+=("--build-arg" "BIN_NAME=$binaryName")
+    execute_build_with_ticker "$df" "${buildArgs[@]}"
+    status=$?
+    [ $status -eq 0 ] && show_header "Compilation cache cleared cleanly!" "green"
+    exit $status
+
 else
-    buildArgs+=("--build-arg" "BIN_NAME=$binaryName" "-f" "-" "-o" "./output" ".")
+    buildArgs+=("--build-arg" "BIN_NAME=$binaryName" "-f" "-" "-o" "./dist" ".")
     show_header "Compiling static Alpine production binary asset pipeline..." "cyan"
-    rm -rf ./output
+    rm -rf ./dist
 
     df=$(cat <<EOF
-FROM rust:alpine AS builder
+FROM rust:$rustVersion AS builder
 ARG BIN_NAME
 ARG CARGO_FLAGS
 ARG REFRESH_CACHE=false
 WORKDIR /app
 COPY . .
-RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ "\$REFRESH_CACHE" = "true" ]; then cargo update; fi
-RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS
-RUN --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo build --release --target x86_64-unknown-linux-musl \$CARGO_FLAGS
+RUN --mount=type=cache,id=alprust-target-\$BIN_NAME,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db if [ "\$REFRESH_CACHE" = "true" ]; then cargo update; fi
+RUN --mount=type=cache,id=alprust-target-\$BIN_NAME,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo test \$CARGO_FLAGS
+RUN --mount=type=cache,id=alprust-target-\$BIN_NAME,target=/app/target --mount=type=cache,id=alprust-registry-db,target=/usr/local/cargo/registry/db --mount=type=cache,id=alprust-registry-cache,target=/usr/local/cargo/registry/cache --mount=type=cache,id=alprust-git-db,target=/usr/local/cargo/git/db cargo build --release \$CARGO_FLAGS && (cp /app/target/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null || cp /app/target/*/*/release/\$BIN_NAME /app/\$BIN_NAME 2>/dev/null)
 
 FROM scratch
 ARG BIN_NAME
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/\$BIN_NAME /
+COPY --from=builder /app/\$BIN_NAME /
 EOF
 )
 
@@ -278,7 +340,7 @@ EOF
         show_header "Static cross-compilation pipeline executed flawlessly!" "green"
         show_header "Booting sandbox environment application loop... (Press Ctrl+C to terminate cleanly)" "cyan"
         
-        hostOutputDir=$(pwd)/output
+        hostOutputDir=$(pwd)/dist
         runArgs+=("--rm" "-it" "--init")
         
         if [ "$port" -gt 0 ]; then
@@ -292,7 +354,7 @@ EOF
         runArgs+=("-v" "$hostOutputDir:/app" "alpine" "/app/$binaryName")
         docker run "${runArgs[@]}"
     elif [ $status -eq 0 ]; then
-        show_header "Static standalone binary extracted cleanly to ./output/$binaryName" "green"
+        show_header "Static standalone binary extracted cleanly to ./dist/$binaryName" "green"
     else
         exit $status
     fi

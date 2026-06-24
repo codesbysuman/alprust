@@ -18,11 +18,11 @@ Trying to set up this cross-compilation toolchain **natively or reliably on Wind
 
 ## Features
 
-* **Zero Codebase Clutter:** Operates entirely in-memory. It pipes build instructions straight to the Docker daemon via `stdin`, leaving your local repository completely clean.
+* **Zero Codebase Clutter:** Operates cleanly by auto-generating and cleaning up temporary build files in-place, and automatically managing `.dockerignore` filters to keep your local repository clean and optimize build context size.
 * **Future-Proof Project Scaffolding:** Includes an automated initializer (`alprust init`) to instantly spin up standard Rust binary template directories. It dynamically prompts for your project name, version metadata, dependency maps, and target **Rust Edition** (fully supporting 2021, 2024, and beyond).
 * **Native Subcommands:** Replaces raw Cargo calls seamlessly with subcommands like `alprust check` and `alprust test` executed inside precise Alpine contexts.
-* **Centralized Global Caching:** Leverages explicit, shared BuildKit layer cache pools across your entire machine. Dependencies downloaded by one project are instantly available to any other project, minimizing internet usage and slashing subsequent build times.
-* **Secure, In-Place Cache Eviction:** Offers targeted cache control via an explicit modifier flag. Passing `-refresh` safely coordinates an atomic `cargo update` inside the container without destructively wiping out unrelated cached projects.
+* **Workspace-Specific Target Caching & Global Registry:** Leverages shared global dependency registries across all projects on your machine while keeping isolated compiler target cache mounts for each specific workspace. Subsequent builds and tests compile almost instantly.
+* **Secure, In-Place Cache Eviction & Cleanup:** Supports targeted cache control via `-refresh` (atomic `cargo update` inside the container) and a native `alprust clean` command (which flushes target build cache mounts for the current workspace).
 * **Absolute Network Isolation:** Features a strict air-gap option (`-offline`) that physically severs the compilation container's network interface (`--network none`), forcing execution entirely from local caches.
 * **Live Progress Ticker & Adaptive Logging:** Mutes noisy Docker BuildKit tracking data behind a clean, live **in-place stopwatch ticker** counting execution time on a single line. If a compilation fails, the engine instantly extracts the internal logs and dumps the error stream directly onto your screen.
 * **On-Demand Verbosity:** Supports a dedicated `-verbose` switch to bypass stream guards entirely whenever you need to see raw, unedited live tracking lines.
@@ -101,7 +101,7 @@ alprust init
 
 * **Project Name:** `tasks-processor` (Defaults to your current directory name if left blank)
 * **Version:** `1.0.0` (Defaults to `0.1.0` if left blank)
-* **Rust Edition:** `2024` (Defaults to `2021` if left blank)
+* **Rust Edition:** `2024` (Defaults to `2024` if left blank)
 * **Dependencies:** `tokio@1.35, serde, axum@0.7.2` (Specifying no `@version` configuration defaults to the latest `*` package wildcard)
 
 ### 3. Verification Checking
@@ -124,14 +124,22 @@ alprust test
 
 ### 5. Production Compilation Only
 
-Compiles and extracts the bare-metal static binary straight into your local `./output/` folder without launching a live verification container sandbox:
+Compiles and extracts the bare-metal static binary straight into your local `./dist/` folder without launching a live verification container sandbox:
 
 ```bash
 alprust build
 
 ```
 
-### 6. Continuous Dev Loop (Default Action)
+### 6. Cache Cleaning
+
+Clears the target compilation cache specifically for the current workspace inside Docker (running a containerized `cargo clean` with the compiler target cache mounted):
+
+```bash
+alprust clean
+```
+
+### 7. Continuous Dev Loop (Default Action)
 
 Runs test workflows, outputs the static binary, and **immediately boots it live** inside an Alpine runtime container instance:
 
@@ -139,7 +147,6 @@ Runs test workflows, outputs the static binary, and **immediately boots it live*
 alprust
 # Or explicitly:
 alprust run
-
 ```
 
 ---
@@ -188,4 +195,4 @@ let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?
 
 Once booted via `alprust -port 8080`, open your browser or Postman on your host machine and hit: `http://localhost:8080/health`.
 
-Press **`Ctrl + C`** in your terminal to shut down the runtime sandbox cleanly. Your production-ready binary will be waiting natively inside your project's new `./output/` directory, ready to be copied directly onto your infrastructure.
+Press **`Ctrl + C`** in your terminal to shut down the runtime sandbox cleanly. Your production-ready binary will be waiting natively inside your project's new `./dist/` directory, ready to be copied directly onto your infrastructure.
